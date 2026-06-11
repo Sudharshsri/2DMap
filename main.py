@@ -17,9 +17,9 @@ def run():
     is962_ctx = extract_is962_context("input/IS 962.pdf")
     print(f"  → IS 962 context ready ({len(is962_ctx)} characters)")
 
-    # Step 2: Extract frames from video (2 fps)
+    # Step 2: Extract frames from video (1 fps)
     print("\n[2/4] Extracting video frames...")
-    frames = extract_key_frames("input/room_video.mp4", "output/frames", frames_per_second=2)
+    frames = extract_key_frames("input/room_video.mp4", "output/frames", frames_per_second=1)
     print(f"  → {len(frames)} frames extracted")
 
     # Step 3: Moondream analyzes frames using IS 962 context → JSON

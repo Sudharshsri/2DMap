@@ -59,12 +59,9 @@ def _synthesize(observations, is962_context):
     # (the key rules about A4, line types, lettering are in the first section)
     is962_short = is962_context[:600]
 
-    # Cap to 5 frames maximum — avoids overwhelming the prompt
-    obs_subset = observations[:5]
-
     # Build a compact summary — truncate each observation to avoid long prompts
     summary = ""
-    for obs in obs_subset:
+    for obs in observations:
         summary += (
             f"\nFrame {obs['frame']}:\n"
             f"  Rooms  : {obs['rooms'][:150]}\n"
@@ -163,13 +160,6 @@ def _fallback():
 def process_frames_with_vlm(frames_folder, is962_context):
     frame_files = sorted([f for f in os.listdir(frames_folder) if f.endswith(".jpg")])
     total = len(frame_files)
-
-    # Cap at 8 frames — anything more overwhelms both Moondream and the prompt
-    if total > 8:
-        step = total // 8
-        frame_files = [frame_files[i] for i in range(0, total, step)][:8]
-        total = len(frame_files)
-        print(f"  Capped to {total} evenly-spaced frames (was {len(os.listdir(frames_folder))} total)")
 
     print(f"  Phase A: Analyzing {total} frames with Moondream (image model)...")
 

@@ -94,15 +94,11 @@ def extract_is962_context(pdf_path):
     total_pages = len(doc)
     print(f"  IS_962.pdf opened — {total_pages} pages")
 
-    # Pass 1 — find relevant pages
-    relevant_pages = _find_relevant_pages(doc, total_pages)
-
-    if not relevant_pages:
-        # Fallback: try all pages if none matched
-        # (can happen if Moondream misses section headings)
-        print("  WARNING: No relevant pages detected in Pass 1.")
-        print("  Fallback: extracting all pages (slower but thorough)...")
-        relevant_pages = list(range(total_pages))
+    # Hardcode relevant pages: Page 6 to Page 29 (indices 5 to 28)
+    # Ensure we don't exceed total_pages just in case
+    start_page = 5
+    end_page = min(29, total_pages)
+    relevant_pages = list(range(start_page, end_page))
 
     # Pass 2 — extract content from each relevant page
     print(f"\n  Pass 2 — Extracting content from {len(relevant_pages)} page(s)...")
