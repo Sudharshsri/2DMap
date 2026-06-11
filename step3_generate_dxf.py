@@ -184,6 +184,16 @@ def _build_png(data, output_png):
     print(f"  PNG saved: {output_png}")
 
 if __name__ == "__main__":
+    import os
+    import sys
+    
+    if not os.path.exists("output/floor_plan.json"):
+        print("Error: output/floor_plan.json not found. Please run step2_vlm_process.py first.")
+        sys.exit(1)
+        
+    # Generate the map from the existing JSON
     generate_floor_plan("output/floor_plan.json",
                         "output/floor_plan.dxf",
                         "output/floor_plan.png")
+                        
+    print("\n✅ DXF and PNG floor plans saved in output/ directory")

@@ -121,6 +121,14 @@ def extract_is962_context(pdf_path):
 
 
 if __name__ == "__main__":
+    import os
+    os.makedirs("output", exist_ok=True)
+    
+    # Run the extraction
     ctx = extract_is962_context("input/IS 962.pdf")
-    print("\n--- Preview (first 600 chars) ---")
-    print(ctx[:600])
+    
+    # Save it to a file so Step 2 can read it
+    with open("output/is962_context.txt", "w", encoding="utf-8") as f:
+        f.write(ctx)
+        
+    print("\n✅ Saved parsed PDF context to output/is962_context.txt")

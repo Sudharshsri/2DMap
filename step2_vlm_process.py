@@ -176,11 +176,24 @@ def process_frames_with_vlm(frames_folder, is962_context):
 
 
 if __name__ == "__main__":
-    from step0_parse_is_962 import extract_is962_context
-    ctx  = extract_is962_context("input/IS 962.pdf")
+    import os
+    import sys
+    
+    # Read the pre-parsed context instead of re-running Step 0
+    context_path = "output/is962_context.txt"
+    if not os.path.exists(context_path):
+        print(f"Error: {context_path} not found. Please run step0_parse_is_962.py first.")
+        sys.exit(1)
+        
+    with open(context_path, "r", encoding="utf-8") as f:
+        ctx = f.read()
+        
+    # Process the frames using the loaded text context
     data = process_frames_with_vlm("output/frames", ctx)
+    
+    # Save the floor plan JSON
     os.makedirs("output", exist_ok=True)
-    with open("output/floor_plan.json", "w") as f:
+    with open("output/floor_plan.json", "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
-    print("JSON saved: output/floor_plan.json")
-    print(json.dumps(data, indent=2))
+        
+    print("\n✅ Floor plan JSON saved to output/floor_plan.json")
