@@ -1,0 +1,6 @@
+opencv-python
+ollama
+pymupdf
+ezdxf
+matplotlib
+Pillow
