@@ -93,16 +93,46 @@ def _synthesize(observations, is962_context):
     "standard": "IS962",
     "confidence": 0.0
   },
-  "rooms": [],
-  "doors": [],
-  "windows": [],
+  "rooms": [
+    {
+      "id": "room1",
+      "name": "Living Room",
+      "x": 0,
+      "y": 0,
+      "width": 100,
+      "height": 100
+    }
+  ],
+  "doors": [
+    {
+      "room_id": "room1",
+      "wall": "right",
+      "position_ratio": 0.5,
+      "width": 15,
+      "swing": "left"
+    }
+  ],
+  "windows": [
+    {
+      "room_id": "room1",
+      "wall": "top",
+      "position_ratio": 0.3,
+      "width": 20
+    }
+  ],
   "corridors": [],
   "stairs": [],
   "adjacency_graph": {}
 }
 """
     prompt = f"""
-...
+Using the frame observations, reconstruct the logical layout of the house.
+1. Invent approximate, logical 2D numerical coordinates (x, y, width, height) for every room to create a basic top-down floor plan layout.
+2. START AT THE BOTTOM: The first room seen in the video (the entrance) must be placed at the bottom of the map (e.g., y=200). 
+3. As the camera moves forward, build new rooms upwards (decrease the Y coordinate). If the camera moves left/right, build rooms to the sides (decrease/increase the X coordinate).
+4. Ensure connected rooms are placed adjacent to each other in the coordinate space.
+5. Place doors on the appropriate walls (top, bottom, left, right) with a position_ratio between 0.0 and 1.0.
+
 FRAME OBSERVATIONS:
 
 {summary}
@@ -115,7 +145,7 @@ Output schema:
 
 {schema}
 
-Output ONLY valid JSON.
+Output ONLY valid JSON matching the exact schema structure.
 """
 
     for attempt in range(1, 4):
@@ -180,7 +210,7 @@ def process_frames_with_vlm(frames_folder, is962_context):
         # Pass standard os paths 
         obs = _analyze_frame(os.path.join(frames_folder, fname), i + 1, total)
         observations.append(obs)
-        print(f"    Summary: {obs['details'][:80]}...")
+        print(f"    Summary:\n{obs['details']}\n")
 
     print("\n  Phase B: Synthesizing JSON with llama3.2:3b (text model)...")
     return _synthesize(observations, is962_context)
