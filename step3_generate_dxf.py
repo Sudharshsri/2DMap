@@ -99,6 +99,21 @@ def _build_dxf(data, output_dxf):
             msp.add_lwpolyline([(x,y),(x+w,y),(x+w,y+h),(x,y+h)],
                                close=True, dxfattribs={"layer":"WINDOWS"})
 
+    # Stairs (architectural: outline + horizontal step lines + direction arrow)
+    for stair in data.get("stairs", []):
+        sx, sy = stair.get("x", 0), stair.get("y", 0)
+        sw, sh = stair.get("width", 22), stair.get("height", 16)
+        msp.add_lwpolyline([(sx, sy), (sx+sw, sy), (sx+sw, sy+sh), (sx, sy+sh)],
+                           close=True, dxfattribs={"layer": "WALLS"})
+        n_steps = max(3, int(sh / 3))
+        step_h = sh / n_steps
+        for i in range(1, n_steps):
+            y_line = sy + i * step_h
+            msp.add_line((sx, y_line), (sx + sw, y_line), dxfattribs={"layer": "WALLS"})
+        # Direction arrow (up arrow from bottom to top of stair box)
+        mid_x = sx + sw / 2
+        msp.add_line((mid_x, sy + 1), (mid_x, sy + sh - 1), dxfattribs={"layer": "LABELS"})
+
     # Title block (IS 962 Sec 10)
     meta = data.get("metadata",{})
     msp.add_lwpolyline([(15,5),(282,5),(282,30),(15,30)],
@@ -130,9 +145,10 @@ def _build_png(data, output_png):
     for i,room in enumerate(data.get("rooms",[])):
         x,y,w,h = room["x"],room["y"],room["width"],room["height"]
         ax.add_patch(mpatches.Rectangle((x,y),w,h,lw=2,ec="black",
-                                         fc=palette[i%len(palette)]))
+                                         fc=palette[i%len(palette)], zorder=2))
         ax.text(x+w/2, y+h/2, room.get("name", "ROOM").upper(),
-                ha="center",va="center",fontsize=8,fontweight="bold",color="#222")
+                ha="center", va="center", fontsize=8, fontweight="bold",
+                color="#222", zorder=7)
 
     # Doors
     for door in data.get("doors",[]):
@@ -188,6 +204,20 @@ def _build_png(data, output_png):
             x,y,w,h = win["x"],win["y"],win.get("width", 10),win.get("height", 10)
             ax.add_patch(mpatches.Rectangle((x,y),w,h,lw=1.5,ec="#228B22",fc="none"))
 
+    # Stairs (outline + horizontal step lines inside + label)
+    for stair in data.get("stairs", []):
+        sx, sy = stair.get("x", 0), stair.get("y", 0)
+        sw, sh = stair.get("width", 22), stair.get("height", 16)
+        ax.add_patch(mpatches.Rectangle((sx, sy), sw, sh,
+                                        lw=1.5, ec="#333333", fc="#D8D8D8", zorder=3))
+        n_steps = max(3, int(sh / 3))
+        step_h = sh / n_steps
+        for i in range(1, n_steps):
+            y_line = sy + i * step_h
+            ax.plot([sx, sx + sw], [y_line, y_line], color="#555555", lw=0.8, zorder=4)
+        ax.text(sx + sw / 2, sy + sh / 2, "STAIRS",
+                ha="center", va="center", fontsize=4.5, color="#222", fontweight="bold", zorder=5)
+
     # Title block
     meta = data.get("metadata",{})
     ax.add_patch(mpatches.Rectangle((15,5),267,25,lw=1,ec="black",fc="white"))
@@ -214,4 +244,4 @@ if __name__ == "__main__":
                         "output/floor_plan.dxf",
                         "output/floor_plan.png")
                         
-    print("\n✅ DXF and PNG floor plans saved in output/ directory")
+    print("\n[OK] DXF and PNG floor plans saved in output/ directory")

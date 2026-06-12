@@ -62,4 +62,4 @@ if __name__ == "__main__":
     frames_per_second = 0.5
     frames = extract_key_frames(video_source, output_dest, frames_per_second)
     
-    print(f"\n✅ Extracted {len(frames)} frames to {output_dest}/")
+    print(f"\n[OK] Extracted {len(frames)} frames to {output_dest}/")

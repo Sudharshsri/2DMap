@@ -51,4 +51,4 @@ if __name__ == "__main__":
     ctx = extract_is962_context("input/IS 962.pdf")
     with open("output/is962_context.txt", "w", encoding="utf-8") as f:
         f.write(ctx)
-    print("\n✅ Saved parsed PDF context to output/is962_context.txt")
+    print("\n[OK] Saved parsed PDF context to output/is962_context.txt")

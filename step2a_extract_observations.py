@@ -10,42 +10,11 @@ def _analyze_frame(image_path, frame_num, total):
     print(f"    Frame {frame_num}/{total}: {os.path.basename(image_path)}")
     img = _encode(image_path)
     
-    combined_prompt = """You are analyzing a single frame from a continuous indoor home walkthrough video.
+    combined_prompt = """Describe this indoor room image for floor plan reconstruction. Answer in ONE short paragraph (max 50 words).
 
-Your task is to describe only the architectural and spatial information useful for reconstructing a floor plan.
+State: room type (kitchen/living room/hallway/bedroom/bathroom/staircase/other), room size (small/medium/large), visible doors (count and which walls), visible windows, any staircase visible, and whether an adjacent room is visible through a doorway and what type it appears to be.
 
-Write EXACTLY TWO SHORT PARAGRAPHS.
-
-Paragraph 1:
-Describe the currently visible space.
-Include:
-- probable room type (living room, bedroom, kitchen, bathroom, corridor, staircase, balcony, etc.)
-- approximate room size (small, medium, large)
-- visible walls
-- visible doors
-- visible windows
-- major openings or passages
-- any architectural features relevant to room layout
-
-Paragraph 2:
-Describe the spatial relationships visible in this frame.
-Include:
-- where doors/openings appear to lead
-- corridors or connecting spaces
-- staircases and their direction
-- apparent camera movement direction (forward, backward, left, right)
-- whether the camera appears to be entering, leaving, or remaining in the current room
-
-Rules:
-- Focus only on structure and layout.
-- Ignore furniture unless it helps identify the room type.
-- Do not estimate dimensions.
-- Do not invent rooms that are not visible.
-- If uncertain, explicitly say "unclear".
-- Keep total response under 80 words.
-- Do not use bullet points.
-- Do not use headings.
-"""
+Focus only on architecture. Ignore furniture."""
     try:
         resp = ollama.chat(
             model="moondream",
@@ -81,7 +50,7 @@ def extract_observations(frames_folder):
     with open("output/observations.txt", "w", encoding="utf-8") as f:
         f.write(summary)
         
-    print("\n✅ Observations saved to output/observations.txt")
+    print("\n[OK] Observations saved to output/observations.txt")
 
 if __name__ == "__main__":
     frames_dir = "output/frames"
