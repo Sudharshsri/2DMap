@@ -40,54 +40,64 @@ def _build_dxf(data, output_dxf):
         msp.add_lwpolyline([(x,y),(x+w,y),(x+w,y+h),(x,y+h)],
                            close=True, dxfattribs={"layer":"WALLS"})
         # IS 962 Sec 10: room label centered, uppercase, 3.5mm
-        msp.add_text(room["name"].upper(),
+        msp.add_text(room.get("name", "ROOM").upper(),
                      dxfattribs={"layer":"LABELS","height":3.5,"insert":(x+w/2, y+h/2)})
 
     # Doors (IS 962 Sec 11: arc + panel line)
     for door in data.get("doors", []):
-        room = rooms.get(door["room_id"])
-        if not room: continue
-        x,y,w,h = room["x"],room["y"],room["width"],room["height"]
-        r,dw = door["position_ratio"], door["width"]
-        wall, swing = door["wall"], door.get("swing","left")
-
-        if wall == "bottom":
-            hx,hy = x+w*r, y
-            msp.add_line((hx,hy),(hx,hy+dw),   dxfattribs={"layer":"DOORS"})
-            a1,a2 = (0,90) if swing=="right" else (90,180)
-        elif wall == "top":
-            hx,hy = x+w*r, y+h
-            msp.add_line((hx,hy),(hx,hy-dw),   dxfattribs={"layer":"DOORS"})
-            a1,a2 = (270,360) if swing=="right" else (180,270)
-        elif wall == "left":
-            hx,hy = x, y+h*r
-            msp.add_line((hx,hy),(hx+dw,hy),   dxfattribs={"layer":"DOORS"})
-            a1,a2 = (0,90) if swing=="right" else (270,360)
-        elif wall == "right":
-            hx,hy = x+w, y+h*r
-            msp.add_line((hx,hy),(hx-dw,hy),   dxfattribs={"layer":"DOORS"})
-            a1,a2 = (180,270) if swing=="right" else (90,180)
-        else: continue
-        msp.add_arc((hx,hy), dw, a1, a2, dxfattribs={"layer":"DOORS"})
+        if door.get("room_id"):
+            room = rooms.get(door["room_id"])
+            if not room: continue
+            x,y,w,h = room["x"],room["y"],room["width"],room["height"]
+            r,dw = door["position_ratio"], door["width"]
+            wall, swing = door["wall"], door.get("swing","left")
+    
+            if wall == "bottom":
+                hx,hy = x+w*r, y
+                msp.add_line((hx,hy),(hx,hy+dw),   dxfattribs={"layer":"DOORS"})
+                a1,a2 = (0,90) if swing=="right" else (90,180)
+            elif wall == "top":
+                hx,hy = x+w*r, y+h
+                msp.add_line((hx,hy),(hx,hy-dw),   dxfattribs={"layer":"DOORS"})
+                a1,a2 = (270,360) if swing=="right" else (180,270)
+            elif wall == "left":
+                hx,hy = x, y+h*r
+                msp.add_line((hx,hy),(hx+dw,hy),   dxfattribs={"layer":"DOORS"})
+                a1,a2 = (0,90) if swing=="right" else (270,360)
+            elif wall == "right":
+                hx,hy = x+w, y+h*r
+                msp.add_line((hx,hy),(hx-dw,hy),   dxfattribs={"layer":"DOORS"})
+                a1,a2 = (180,270) if swing=="right" else (90,180)
+            else: continue
+            msp.add_arc((hx,hy), dw, a1, a2, dxfattribs={"layer":"DOORS"})
+        elif "x" in door and "y" in door:
+            x, y, w, h = door["x"], door["y"], door.get("width", 10), door.get("height", 10)
+            msp.add_lwpolyline([(x,y),(x+w,y),(x+w,y+h),(x,y+h)],
+                               close=True, dxfattribs={"layer":"DOORS"})
 
     # Windows (IS 962 Sec 11: 3 parallel lines across wall opening)
     for win in data.get("windows", []):
-        room = rooms.get(win["room_id"])
-        if not room: continue
-        x,y,w,h = room["x"],room["y"],room["width"],room["height"]
-        r,ww = win["position_ratio"], win["width"]
-        wall, off = win["wall"], 1.5
-
-        if wall in ("bottom","top"):
-            wx = x+w*r
-            wy = y if wall=="bottom" else y+h
-            for dy in (-off,0,off):
-                msp.add_line((wx,wy+dy),(wx+ww,wy+dy), dxfattribs={"layer":"WINDOWS"})
-        elif wall in ("left","right"):
-            wx = x if wall=="left" else x+w
-            wy = y+h*r
-            for dx in (-off,0,off):
-                msp.add_line((wx+dx,wy),(wx+dx,wy+ww), dxfattribs={"layer":"WINDOWS"})
+        if win.get("room_id"):
+            room = rooms.get(win["room_id"])
+            if not room: continue
+            x,y,w,h = room["x"],room["y"],room["width"],room["height"]
+            r,ww = win["position_ratio"], win["width"]
+            wall, off = win["wall"], 1.5
+    
+            if wall in ("bottom","top"):
+                wx = x+w*r
+                wy = y if wall=="bottom" else y+h
+                for dy in (-off,0,off):
+                    msp.add_line((wx,wy+dy),(wx+ww,wy+dy), dxfattribs={"layer":"WINDOWS"})
+            elif wall in ("left","right"):
+                wx = x if wall=="left" else x+w
+                wy = y+h*r
+                for dx in (-off,0,off):
+                    msp.add_line((wx+dx,wy),(wx+dx,wy+ww), dxfattribs={"layer":"WINDOWS"})
+        elif "x" in win and "y" in win:
+            x, y, w, h = win["x"], win["y"], win.get("width", 10), win.get("height", 10)
+            msp.add_lwpolyline([(x,y),(x+w,y),(x+w,y+h),(x,y+h)],
+                               close=True, dxfattribs={"layer":"WINDOWS"})
 
     # Title block (IS 962 Sec 10)
     meta = data.get("metadata",{})
@@ -121,54 +131,62 @@ def _build_png(data, output_png):
         x,y,w,h = room["x"],room["y"],room["width"],room["height"]
         ax.add_patch(mpatches.Rectangle((x,y),w,h,lw=2,ec="black",
                                          fc=palette[i%len(palette)]))
-        ax.text(x+w/2, y+h/2, room["name"].upper(),
+        ax.text(x+w/2, y+h/2, room.get("name", "ROOM").upper(),
                 ha="center",va="center",fontsize=8,fontweight="bold",color="#222")
 
     # Doors
     for door in data.get("doors",[]):
-        room = rooms.get(door["room_id"])
-        if not room: continue
-        x,y,w,h = room["x"],room["y"],room["width"],room["height"]
-        r,dw = door["position_ratio"], door["width"]
-        wall = door["wall"]
-        swing = door.get("swing", "left")
-        if wall=="bottom":
-            hx,hy = x+w*r,y
-            a1,a2 = (0,90) if swing=="right" else (90,180)
-        elif wall=="top":
-            hx,hy = x+w*r,y+h
-            a1,a2 = (270,360) if swing=="right" else (180,270)
-        elif wall=="left":
-            hx,hy = x,y+h*r
-            a1,a2 = (0,90) if swing=="right" else (270,360)
-        elif wall=="right":
-            hx,hy = x+w,y+h*r
-            a1,a2 = (180,270) if swing=="right" else (90,180)
-        else: continue
-        ax.add_patch(Arc((hx,hy),2*dw,2*dw,angle=0,
-                         theta1=a1,theta2=a2,color="#3366CC",lw=1.5))
-        if wall in ("bottom","top"):
-            ax.plot([hx,hx],[hy,hy+(dw if wall=="bottom" else -dw)],
-                    color="#3366CC",lw=1.5)
-        else:
-            ax.plot([hx,hx+(dw if wall=="left" else -dw)],[hy,hy],
-                    color="#3366CC",lw=1.5)
+        if door.get("room_id"):
+            room = rooms.get(door["room_id"])
+            if not room: continue
+            x,y,w,h = room["x"],room["y"],room["width"],room["height"]
+            r,dw = door["position_ratio"], door["width"]
+            wall = door["wall"]
+            swing = door.get("swing", "left")
+            if wall=="bottom":
+                hx,hy = x+w*r,y
+                a1,a2 = (0,90) if swing=="right" else (90,180)
+            elif wall=="top":
+                hx,hy = x+w*r,y+h
+                a1,a2 = (270,360) if swing=="right" else (180,270)
+            elif wall=="left":
+                hx,hy = x,y+h*r
+                a1,a2 = (0,90) if swing=="right" else (270,360)
+            elif wall=="right":
+                hx,hy = x+w,y+h*r
+                a1,a2 = (180,270) if swing=="right" else (90,180)
+            else: continue
+            ax.add_patch(Arc((hx,hy),2*dw,2*dw,angle=0,
+                             theta1=a1,theta2=a2,color="#3366CC",lw=1.5))
+            if wall in ("bottom","top"):
+                ax.plot([hx,hx],[hy,hy+(dw if wall=="bottom" else -dw)],
+                        color="#3366CC",lw=1.5)
+            else:
+                ax.plot([hx,hx+(dw if wall=="left" else -dw)],[hy,hy],
+                        color="#3366CC",lw=1.5)
+        elif "x" in door and "y" in door:
+            x,y,w,h = door["x"],door["y"],door.get("width", 10),door.get("height", 10)
+            ax.add_patch(mpatches.Rectangle((x,y),w,h,lw=1.5,ec="#3366CC",fc="none"))
 
     # Windows
     for win in data.get("windows",[]):
-        room = rooms.get(win["room_id"])
-        if not room: continue
-        x,y,w,h = room["x"],room["y"],room["width"],room["height"]
-        r,ww,off = win["position_ratio"],win["width"],1.5
-        wall = win["wall"]
-        if wall in ("bottom","top"):
-            wx=x+w*r; wy=y if wall=="bottom" else y+h
-            for dy in(-off,0,off):
-                ax.plot([wx,wx+ww],[wy+dy,wy+dy],color="#228B22",lw=1.5)
-        elif wall in ("left","right"):
-            wx=x if wall=="left" else x+w; wy=y+h*r
-            for dx in(-off,0,off):
-                ax.plot([wx+dx,wx+dx],[wy,wy+ww],color="#228B22",lw=1.5)
+        if win.get("room_id"):
+            room = rooms.get(win["room_id"])
+            if not room: continue
+            x,y,w,h = room["x"],room["y"],room["width"],room["height"]
+            r,ww,off = win["position_ratio"],win["width"],1.5
+            wall = win["wall"]
+            if wall in ("bottom","top"):
+                wx=x+w*r; wy=y if wall=="bottom" else y+h
+                for dy in(-off,0,off):
+                    ax.plot([wx,wx+ww],[wy+dy,wy+dy],color="#228B22",lw=1.5)
+            elif wall in ("left","right"):
+                wx=x if wall=="left" else x+w; wy=y+h*r
+                for dx in(-off,0,off):
+                    ax.plot([wx+dx,wx+dx],[wy,wy+ww],color="#228B22",lw=1.5)
+        elif "x" in win and "y" in win:
+            x,y,w,h = win["x"],win["y"],win.get("width", 10),win.get("height", 10)
+            ax.add_patch(mpatches.Rectangle((x,y),w,h,lw=1.5,ec="#228B22",fc="none"))
 
     # Title block
     meta = data.get("metadata",{})
@@ -188,7 +206,7 @@ if __name__ == "__main__":
     import sys
     
     if not os.path.exists("output/floor_plan.json"):
-        print("Error: output/floor_plan.json not found. Please run step2_vlm_process.py first.")
+        print("Error: output/floor_plan.json not found. Please run step2b_generate_json.py first.")
         sys.exit(1)
         
     # Generate the map from the existing JSON

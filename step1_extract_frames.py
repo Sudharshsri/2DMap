@@ -59,7 +59,7 @@ if __name__ == "__main__":
     # Extract frames independently
     video_source = "input/room_video.mp4"
     output_dest = "output/frames"
-    frames_per_second = 1
+    frames_per_second = 0.5
     frames = extract_key_frames(video_source, output_dest, frames_per_second)
     
     print(f"\n✅ Extracted {len(frames)} frames to {output_dest}/")
