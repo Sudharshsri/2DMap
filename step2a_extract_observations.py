@@ -10,11 +10,12 @@ def _analyze_frame(image_path, frame_num, total):
     print(f"    Frame {frame_num}/{total}: {os.path.basename(image_path)}")
     img = _encode(image_path)
     
-    combined_prompt = """Describe this indoor room image for floor plan reconstruction. Answer in ONE short paragraph (max 50 words).
+    combined_prompt = """Look at this indoor photo and answer in one short sentence (max 40 words).
 
-State: room type (kitchen/living room/hallway/bedroom/bathroom/staircase/other), room size (small/medium/large), visible doors (count and which walls), visible windows, any staircase visible, and whether an adjacent room is visible through a doorway and what type it appears to be.
+Tell me: what type of room is this (kitchen, living room, bedroom, hallway, bathroom, staircase)? How many doors are visible? Is a staircase visible? Can you see into another room through a doorway, and if so what type?
 
-Focus only on architecture. Ignore furniture."""
+Example answer: "Living room, medium, 2 doors on left and right walls, staircase visible, doorway leads to kitchen."
+"""
     try:
         resp = ollama.chat(
             model="moondream",

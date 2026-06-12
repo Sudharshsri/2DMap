@@ -1,5 +1,5 @@
 import cv2
-import math
+import os
 from pathlib import Path
 
 def extract_key_frames(video_path, output_folder, frames_per_second):
@@ -56,10 +56,22 @@ def extract_key_frames(video_path, output_folder, frames_per_second):
     return saved
 
 if __name__ == "__main__":
-    # Extract frames independently
-    video_source = "input/room_video.mp4"
+    import sys
+    import glob
+
+    # Accept video path as CLI arg, otherwise auto-detect latest .mp4 in input/
+    if len(sys.argv) > 1:
+        video_source = sys.argv[1]
+    else:
+        candidates = sorted(glob.glob("input/*.mp4"), key=os.path.getmtime, reverse=True)
+        if not candidates:
+            print("Error: No .mp4 files found in input/")
+            sys.exit(1)
+        video_source = candidates[0]
+
+    print(f"  Using video: {video_source}")
     output_dest = "output/frames"
     frames_per_second = 0.5
     frames = extract_key_frames(video_source, output_dest, frames_per_second)
-    
+
     print(f"\n[OK] Extracted {len(frames)} frames to {output_dest}/")
