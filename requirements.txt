@@ -1,6 +1,15 @@
-opencv-python
-ollama
-pymupdf
-ezdxf
-matplotlib
-Pillow
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+opencv-python>=4.8.0
+Pillow>=10.0.0
+ezdxf>=1.1.0
+matplotlib>=3.7.0
+numpy>=1.24.0
+requests>=2.31.0
+transformers>=4.49.0
+torch==2.4.0+cpu
+torchvision==0.19.0+cpu
+torchaudio==2.4.0+cpu
+accelerate
+qwen-vl-utils
+einops
