@@ -1,15 +1,18 @@
+# PyTorch CPU-only wheels (avoids the fbgemm.dll issue on Windows)
 --extra-index-url https://download.pytorch.org/whl/cpu
 
+# ── Core pipeline ─────────────────────────────────────────────
 opencv-python>=4.8.0
-Pillow>=10.0.0
+Pillow>=10.0.0,<13.0.0
 ezdxf>=1.1.0
 matplotlib>=3.7.0
 numpy>=1.24.0
 requests>=2.31.0
+
+# ── VLM (Qwen2.5-VL via HuggingFace) ─────────────────────────
 transformers>=4.49.0
-torch==2.4.0+cpu
-torchvision==0.19.0+cpu
-torchaudio==2.4.0+cpu
-accelerate
-qwen-vl-utils
-einops
+torch==2.12.0+cpu
+torchvision==0.27.0+cpu
+accelerate>=1.0.0
+qwen-vl-utils>=0.0.14
+einops>=0.8.0

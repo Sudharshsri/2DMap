@@ -47,8 +47,8 @@ def _parse_args():
         help="Output directory (default: output/)",
     )
     p.add_argument(
-        "--fps", type=int, default=1,
-        help="Frame extraction rate in fps (default: 1)",
+        "--fps", type=float, default=0.5,
+        help="Frame extraction rate in fps (default: 0.5)",
     )
     p.add_argument(
         "--skip", type=int, nargs="*", default=[],

@@ -22,7 +22,7 @@ _LK_PARAMS = dict(
 
 
 def extract_frames_with_motion(video_path: str, output_dir: str,
-                                fps_target: int = 1) -> dict:
+                                fps_target: float = 1.0) -> dict:
     """
     Extract frames from *video_path* at *fps_target* fps and compute
     per-frame motion heuristics.

@@ -1,16 +1,28 @@
 """
-Stage 2 — Per-frame semantic perception using Qwen2.5-VL-7B-Instruct
+Stage 2 — Per-frame semantic perception using Qwen2.5-VL-3B-Instruct
 loaded locally via HuggingFace transformers.
 
-First run downloads ~15 GB of weights to the HuggingFace cache.
-Subsequent runs load from cache instantly.
+Changes from v1
+---------------
+* Removed 'hallway' from VALID_ROOM_TYPES — it is collapsed into 'corridor'
+  via SEMANTIC_CANONICAL and an explicit prompt guideline, eliminating the
+  corridor/hallway synonym collision that caused single-frame outlier segments.
+* Removed 'is_boundary_heuristic' from the VLM prompt and output dict.
+  Boundary detection is now done in Stage 3 using motion rotation data,
+  which is a more reliable signal than asking a VLM to predict pipeline state.
+* Added 'alternative_type' field.  When the model's confidence is below 0.65
+  it records its second-best guess; Stage 3 uses this for weighted voting
+  instead of a hard room-type flip.
+* Prompt reframed as observational rather than purely categorical — the model
+  is asked to describe what it sees and then map, rather than just pick a label.
+* view_direction renamed to view_description for clarity.
 
 RAM note (CPU-only, 16 GB):
-  float16 weights alone take ~14 GB, leaving ~2 GB for activations.
-  If you hit an OOM error, change _HF_MODEL_ID to the 3B variant:
-      "Qwen/Qwen2.5-VL-3B-Instruct"   (~6 GB in float16, very comfortable)
+  float16 weights alone take ~6 GB for 3B, leaving comfortable headroom.
+  If you need even lighter, there is no official Qwen2.5-VL 1B yet; fall
+  back to the default perception if the model fails to load.
 
-Requirements (already installed):
+Requirements:
     transformers>=4.49  qwen-vl-utils  torch  torchvision  accelerate  Pillow
 """
 import json
@@ -22,36 +34,57 @@ from PIL import Image
 # ── model selection ───────────────────────────────────────────────────────────
 
 _HF_MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
-
-# Reduce image resolution to save activation memory on CPU (default is 1280*28*28)
-_MIN_PIXELS = 128 * 28 * 28
+_MIN_PIXELS  = 128 * 28 * 28
 _MAX_PIXELS  = 256 * 28 * 28
 
-# ── allowed vocabulary ────────────────────────────────────────────────────────
+# ── semantic normalization ────────────────────────────────────────────────────
+# Applied at parse time to collapse VLM synonyms that share the same physical
+# space.  This is the primary defence against label collisions; Stage 3 applies
+# the same map as a secondary safety net.
 
-VALID_SIZE_HINTS = {"very_small", "small", "medium", "large", "very_large"}
-VALID_DOOR_SIDES = {"left", "right", "front", "none"}
+SEMANTIC_CANONICAL: dict[str, str] = {
+    "hallway":    "corridor",
+    "passage":    "corridor",
+    "walkway":    "corridor",
+    "passageway": "corridor",
+}
+
+# ── allowed vocabulary ────────────────────────────────────────────────────────
+# 'hallway' is intentionally absent — it is handled by SEMANTIC_CANONICAL above
+# and excluded from the prompt so the model never samples it as a primary label.
+
 VALID_ROOM_TYPES = {
-    "entrance", "corridor", "hallway", "living_room", "bedroom",
+    "entrance", "corridor", "living_room", "bedroom",
     "kitchen", "bathroom", "office", "stairwell", "lobby", "unknown",
 }
+VALID_SIZE_HINTS = {"very_small", "small", "medium", "large", "very_large"}
+VALID_DOOR_SIDES = {"left", "right", "front", "none"}
 
 # ── prompt ────────────────────────────────────────────────────────────────────
 
 _PROMPT = """\
 You are analysing a single frame from an indoor walkthrough video.
-Describe ONLY what is clearly visible. Do NOT invent rooms, doors, or objects.
+Describe ONLY what is clearly and directly visible in the image.
 
 Output ONLY this JSON (no markdown, no explanation):
 {
-  "room_type": "<entrance|corridor|hallway|living_room|bedroom|kitchen|bathroom|office|stairwell|lobby|unknown>",
+  "room_type": "<entrance|corridor|living_room|bedroom|kitchen|bathroom|office|stairwell|lobby|unknown>",
+  "alternative_type": "<second-best guess from the same list, or null if confident>",
   "size_hint": "<very_small|small|medium|large|very_large>",
   "doors_visible": ["<left|right|front|none>"],
-  "view_direction": "<3-6 word description>",
-  "is_boundary_heuristic": <true|false>,
-  "spatial_characteristics": ["<visible feature 1>", "<visible feature 2>"],
+  "view_description": "<3-6 words describing what is literally visible>",
+  "spatial_characteristics": ["<observed feature 1>", "<observed feature 2>"],
   "confidence": <0.1-1.0>
-}"""
+}
+
+Guidelines:
+- If the space is a long narrow passage, walkway, or hallway of any kind, always output "corridor".
+- If you cannot clearly identify the space type, output "unknown" with confidence below 0.4.
+- Do NOT invent rooms, doors, or objects that are not clearly visible.
+- spatial_characteristics must describe physically observable things
+  (e.g. "tiled floor", "glass door on the left", "exposed brick wall").
+- Set confidence below 0.6 if the view is partial, blurry, or transitional.
+- If confidence is below 0.65, provide a meaningful alternative_type; otherwise set it to null."""
 
 
 # ── public API ────────────────────────────────────────────────────────────────
@@ -72,8 +105,9 @@ def analyze_frames(frame_paths: list) -> list:
         print(f"  Frame {i+1:>4}/{n}: {Path(fpath).name}", end="", flush=True)
         perc = _analyse_one(model, processor, fpath, i)
         perceptions.append(perc)
+        alt_str = f" (alt={perc['alternative_type']})" if perc.get("alternative_type") else ""
         print(
-            f"  -> {perc['room_type']:<20}"
+            f"  -> {perc['room_type']:<20}{alt_str}"
             f"  size={perc['size_hint']:<12}"
             f"  doors={perc['doors_visible']}"
             f"  conf={perc['confidence']:.2f}"
@@ -125,8 +159,8 @@ def _analyse_one(model, processor, frame_path: str, frame_id: int) -> dict:
             {
                 "role": "user",
                 "content": [
-                    {"type": "image",  "image": image},
-                    {"type": "text",   "text": _PROMPT},
+                    {"type": "image", "image": image},
+                    {"type": "text",  "text": _PROMPT},
                 ],
             }
         ]
@@ -167,6 +201,13 @@ def _analyse_one(model, processor, frame_path: str, frame_id: int) -> dict:
 
 # ── JSON parsing & normalisation ──────────────────────────────────────────────
 
+def _normalize_room_type(rt: str) -> str:
+    """Canonicalize a raw room-type string: lowercase, apply synonym map, validate."""
+    rt = rt.strip().lower().replace(" ", "_")
+    rt = SEMANTIC_CANONICAL.get(rt, rt)
+    return rt if rt in VALID_ROOM_TYPES else "unknown"
+
+
 def _parse_response(text: str, frame_id: int) -> dict:
     text = re.sub(r"```(?:json)?", "", text).strip()
 
@@ -180,12 +221,23 @@ def _parse_response(text: str, frame_id: int) -> dict:
     except json.JSONDecodeError:
         return _default_perception(frame_id)
 
-    rt = str(raw.get("room_type", "unknown")).lower().replace(" ", "_")
-    room_type = rt if rt in VALID_ROOM_TYPES else "unknown"
+    # --- room_type (normalised) ---
+    room_type = _normalize_room_type(str(raw.get("room_type", "unknown")))
 
+    # --- alternative_type (new) ---
+    # Only kept when it differs from room_type and is not unknown.
+    alt_raw = raw.get("alternative_type")
+    alternative_type: str | None = None
+    if alt_raw and str(alt_raw).strip().lower() not in ("null", "none", ""):
+        alt_candidate = _normalize_room_type(str(alt_raw))
+        if alt_candidate not in ("unknown", room_type):
+            alternative_type = alt_candidate
+
+    # --- size_hint ---
     sh = str(raw.get("size_hint", "medium")).lower().replace(" ", "_")
     size_hint = sh if sh in VALID_SIZE_HINTS else "medium"
 
+    # --- doors_visible ---
     raw_doors = raw.get("doors_visible", ["none"])
     if not isinstance(raw_doors, list):
         raw_doors = [str(raw_doors)]
@@ -193,28 +245,34 @@ def _parse_response(text: str, frame_id: int) -> dict:
         d.lower() for d in raw_doors if str(d).lower() in VALID_DOOR_SIDES
     ] or ["none"]
 
-    vd = str(raw.get("view_direction", "unknown")).strip().lower()
-    view_direction = re.sub(r"[^\w]", "_", vd)[:60] or "unknown"
+    # --- view_description (renamed from view_direction) ---
+    # Accept either key for backwards-compat with cached stage2 results.
+    vd = str(raw.get("view_description", raw.get("view_direction", "unknown"))).strip().lower()
+    view_description = re.sub(r"[^\w\s]", "", vd)[:80] or "unknown"
 
-    bh = raw.get("is_boundary_heuristic", False)
-    is_boundary = bool(bh) if isinstance(bh, bool) else "true" in str(bh).lower()
-
+    # --- spatial_characteristics ---
     sc = raw.get("spatial_characteristics", [])
     spatial = [str(c).strip() for c in sc if str(c).strip()][:5] \
         if isinstance(sc, list) else []
 
+    # --- confidence ---
     try:
         conf = round(max(0.1, min(1.0, float(raw.get("confidence", 0.5)))), 2)
     except (TypeError, ValueError):
         conf = 0.5
 
+    # Guard: if the model claims high confidence but still offered an alternative,
+    # cap conf at 0.70 so Stage 3 weighted voting gets a fair signal.
+    if alternative_type and conf > 0.70:
+        conf = 0.70
+
     return {
         "frame_id":                frame_id,
         "room_type":               room_type,
+        "alternative_type":        alternative_type,
         "size_hint":               size_hint,
         "doors_visible":           doors_visible,
-        "view_direction":          view_direction,
-        "is_boundary_heuristic":   is_boundary,
+        "view_description":        view_description,
         "spatial_characteristics": spatial,
         "confidence":              conf,
     }
@@ -224,10 +282,10 @@ def _default_perception(frame_id: int) -> dict:
     return {
         "frame_id":                frame_id,
         "room_type":               "unknown",
+        "alternative_type":        None,
         "size_hint":               "medium",
         "doors_visible":           ["none"],
-        "view_direction":          "unknown",
-        "is_boundary_heuristic":   False,
+        "view_description":        "unknown",
         "spatial_characteristics": [],
         "confidence":              0.1,
     }

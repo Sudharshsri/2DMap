@@ -1,6 +1,15 @@
 """
 Stage 4 — Global floor-plan structuring via Llama 3.2:3b (Ollama).
 
+Changes from v1
+---------------
+* Added _slim_segments(): strips frame-level noise (frame_ids arrays, raw
+  motion vectors, per-frame spatial characteristics) before the LLM call.
+  A 3B model's context window fills quickly when full segment dicts are
+  serialised; sending only the fields that drive floor-plan layout decisions
+  (segment_id, room_type, size_hint, door_locations, confidence) measurably
+  improves structured JSON output quality from small models.
+
 Feeds the stage-3 segment summaries and transitions to Llama and asks it
 to produce a single coherent JSON floor-plan spec.  If Ollama is not
 reachable the fallback generator builds the spec directly from the
@@ -77,7 +86,7 @@ def generate_floor_plan(segments: list, transitions: list) -> dict:
     returns invalid JSON.
     """
     prompt = _PROMPT_TEMPLATE.format(
-        segments_json=json.dumps(segments, indent=2),
+        segments_json=json.dumps(_slim_segments(segments), indent=2),
         transitions_json=json.dumps(transitions, indent=2),
     )
 
@@ -90,6 +99,39 @@ def generate_floor_plan(segments: list, transitions: list) -> dict:
 
     plan = _parse_and_validate(raw, segments, transitions)
     return plan
+
+
+# ── segment slimming ─────────────────────────────────────────────────────────
+
+def _slim_segments(segments: list) -> list:
+    """
+    Strip frame-level detail from segments before the LLM call.
+
+    Fields removed
+    --------------
+    frame_ids            — can be a long list; useless for layout decisions
+    segment_motion       — raw motion vectors; not needed by the LLM
+    spatial_characteristics — per-frame text; inflates context without value
+    is_boundary_heuristic   — pipeline-internal flag; LLM does not need it
+
+    Fields kept
+    -----------
+    segment_id       — lets the LLM reference segments in its output
+    room_type        — the primary layout signal
+    size_hint        — drives room dimensions
+    door_locations   — drives adjacency and door placement
+    confidence       — lets the LLM weight ambiguous segments lower
+    """
+    return [
+        {
+            "segment_id":    s["segment_id"],
+            "room_type":     s["room_type"],
+            "size_hint":     s["size_hint"],
+            "door_locations": s.get("door_locations", []),
+            "confidence":    s["confidence"],
+        }
+        for s in segments
+    ]
 
 
 # ── Ollama I/O ───────────────────────────────────────────────────────────────
@@ -120,7 +162,6 @@ def _call_ollama(prompt: str, retries: int = 2) -> Optional[str]:
 
 def _parse_and_validate(raw: str, segments: list, transitions: list) -> dict:
     """Extract JSON from LLM response; fall back if malformed."""
-    # Try to locate a JSON object in the response
     start = raw.find('{')
     end   = raw.rfind('}')
     if start == -1 or end == -1 or end <= start:
@@ -159,9 +200,9 @@ def _parse_and_validate(raw: str, segments: list, transitions: list) -> dict:
         if t.get("from_room") in room_ids and t.get("to_room") in room_ids
     ]
 
-    # Recompute camera_path from positions (LLM coords are often unreliable)
-    position_map  = assign_room_positions(rooms, valid_transitions)
-    camera_path   = compute_camera_path(rooms, valid_transitions, position_map)
+    # Recompute camera_path from positions (LLM coords are unreliable at 3B scale)
+    position_map = assign_room_positions(rooms, valid_transitions)
+    camera_path  = compute_camera_path(rooms, valid_transitions, position_map)
 
     return {
         "rooms":       rooms,
@@ -174,7 +215,6 @@ def _parse_and_validate(raw: str, segments: list, transitions: list) -> dict:
 
 def _fallback_floor_plan(segments: list, transitions: list) -> dict:
     """Build a floor plan directly from stage-3 data without LLM."""
-    # Deduplicate rooms by type (first occurrence wins)
     seen_types:      dict = {}
     rooms:           list = []
     room_id_by_type: dict = {}
@@ -184,8 +224,8 @@ def _fallback_floor_plan(segments: list, transitions: list) -> dict:
         if rt == "unknown" or rt in seen_types:
             continue
         seen_types[rt] = True
-        rid        = f"R{len(rooms)}"
-        size_hint  = seg.get("size_hint", "medium")
+        rid       = f"R{len(rooms)}"
+        size_hint = seg.get("size_hint", "medium")
         if size_hint not in SIZE_HINT_DIMS:
             size_hint = "medium"
         w, h = SIZE_HINT_DIMS[size_hint]
@@ -214,11 +254,11 @@ def _fallback_floor_plan(segments: list, transitions: list) -> dict:
         tr = room_id_by_type.get(t["to_room_type"])
         if fr and tr and fr != tr:
             plan_transitions.append({
-                "detected":     t["detected"],
-                "from_room":    fr,
-                "to_room":      tr,
+                "detected":      t["detected"],
+                "from_room":     fr,
+                "to_room":       tr,
                 "door_position": t.get("door_position", "front"),
-                "confidence":   t.get("confidence", 0.5),
+                "confidence":    t.get("confidence", 0.5),
             })
 
     # Attach door_locations to rooms based on transitions
