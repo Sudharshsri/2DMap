@@ -141,7 +141,10 @@ def detect_transitions(segments: list) -> list:
         )
         detected = a_boundary or b_boundary or a_has_door or b_has_door
 
-        # Best door side: prefer seg_a (leaving side), fall back to seg_b (entering side)
+        # Best door side: prefer VLM door reports, then fall back to optical-flow
+        # rotation of the *entering* segment.  A negative rotation means the camera
+        # turned left to enter the next room (door is on the left wall); positive
+        # means it turned right.
         door_position = "front"
         if seg_a.get("door_locations"):
             best = max(seg_a["door_locations"], key=lambda d: d["confidence"])
@@ -149,6 +152,12 @@ def detect_transitions(segments: list) -> list:
         elif seg_b.get("door_locations"):
             best = max(seg_b["door_locations"], key=lambda d: d["confidence"])
             door_position = best["side"]
+        else:
+            entering_rot = seg_b.get("segment_motion", {}).get("rotation_deg", 0.0)
+            if entering_rot < -10.0:
+                door_position = "left"
+            elif entering_rot > 10.0:
+                door_position = "right"
 
         confidence = round((seg_a["confidence"] + seg_b["confidence"]) / 2, 2)
 

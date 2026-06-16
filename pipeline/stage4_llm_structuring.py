@@ -205,6 +205,20 @@ def _parse_and_validate(raw: str, segments: list, transitions: list) -> dict:
         if t.get("from_room") in room_ids and t.get("to_room") in room_ids
     ]
 
+    # Rebuild door_locations from validated transitions — Llama's guesses are
+    # unreliable at 3B scale and may disagree with the transition door_position,
+    # causing the rendered doors to be on the wrong wall.
+    room_lookup = {r["id"]: r for r in rooms}
+    for r in rooms:
+        r["door_locations"] = []
+    for t in valid_transitions:
+        room = room_lookup.get(t["from_room"])
+        if room is not None:
+            room["door_locations"].append({
+                "side":       t["door_position"],
+                "to_room_id": t["to_room"],
+            })
+
     # Recompute camera_path from positions (LLM coords are unreliable at 3B scale)
     position_map = assign_room_positions(rooms, valid_transitions)
     camera_path  = compute_camera_path(rooms, valid_transitions, position_map)
