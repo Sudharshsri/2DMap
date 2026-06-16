@@ -80,8 +80,7 @@ def assign_room_positions(rooms: list, transitions: list) -> dict:
     return position_map
 
 
-def compute_camera_path(rooms: list, transitions: list, position_map: dict,
-                        segments: list | None = None) -> list:
+def compute_camera_path(rooms: list, transitions: list, position_map: dict) -> list:
     """
     Build a camera_path list of {x, y, heading_deg, from_segment_id, to_segment_id}
     by walking room centres in transition order.

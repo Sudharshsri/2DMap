@@ -15,7 +15,7 @@ and load their cached JSON instead.
 Stages
 ------
   1  Extract frames + motion heuristics  (OpenCV)
-  2  Per-frame semantic perception        (Moondream VLM)
+  2  Per-frame semantic perception        (Qwen2.5-VL:3b via Ollama, with temporal frame comparison)
   3  Segment grouping + transition detect (pure Python)
   4  Global floor-plan structuring        (Llama 3.2:3b via Ollama)
   5  CAD rendering                        (ezdxf + Matplotlib)
@@ -108,7 +108,7 @@ def main():
     print(f"  Result : {len(frame_paths)} frames, {len(frame_motion)} motion entries")
 
     # ── Stage 2: Moondream perception ─────────────────────────────────────────
-    _header(2, "Per-frame semantic perception (Moondream)")
+    _header(2, "Per-frame semantic perception (Qwen2.5-VL:3b via Ollama)")
     cache2 = out_dir / "stage2_perception.json"
 
     if 2 in skip and cache2.exists():

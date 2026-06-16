@@ -36,7 +36,8 @@ Rules:
 3. Assign dimensions from size_hint: very_small=2x2, small=3x3, medium=4x4, large=5x5, very_large=6x6.
 4. Place rooms adjacently based on door_position: right→+x, left→-x, front→+y, back→-y.
 5. camera_path visits room centres in transition order; heading_deg: 0=forward, 90=turn right, -90=turn left.
-6. Output ONLY valid JSON — no markdown, no extra text.
+6. Use objects_visible and view_descriptions to resolve ambiguous room_type labels.
+7. Output ONLY valid JSON — no markdown, no extra text.
 
 Input segments (JSON array):
 {segments_json}
@@ -120,15 +121,19 @@ def _slim_segments(segments: list) -> list:
     room_type        — the primary layout signal
     size_hint        — drives room dimensions
     door_locations   — drives adjacency and door placement
+    objects_visible  — top-5 observed objects; helps LLM confirm room type
+    view_descriptions — up to 2 unique scene descriptions; extra context
     confidence       — lets the LLM weight ambiguous segments lower
     """
     return [
         {
-            "segment_id":    s["segment_id"],
-            "room_type":     s["room_type"],
-            "size_hint":     s["size_hint"],
-            "door_locations": s.get("door_locations", []),
-            "confidence":    s["confidence"],
+            "segment_id":      s["segment_id"],
+            "room_type":       s["room_type"],
+            "size_hint":       s["size_hint"],
+            "door_locations":  s.get("door_locations", []),
+            "objects_visible": s.get("objects_visible", [])[:5],
+            "view_descriptions": s.get("view_descriptions", [])[:2],
+            "confidence":      s["confidence"],
         }
         for s in segments
     ]

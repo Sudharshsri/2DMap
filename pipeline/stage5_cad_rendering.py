@@ -185,8 +185,8 @@ def _render_png(rooms, camera_path, position_map, out_path):
         xs = [p["x"] for p in camera_path]
         ys = [p["y"] for p in camera_path]
         ax.plot(xs, ys, "r-", linewidth=2.5, zorder=5)
-        ax.plot(xs[0],  ys[0],  "go", markersize=12, zorder=6, label="Start")
-        ax.plot(xs[-1], ys[-1], "rs", markersize=12, zorder=6, label="End")
+        ax.plot(xs[0],  ys[0],  "go", markersize=12, zorder=6)
+        ax.plot(xs[-1], ys[-1], "rs", markersize=12, zorder=6)
 
         for i in range(len(camera_path) - 1):
             cx, cy   = camera_path[i]["x"],   camera_path[i]["y"]
