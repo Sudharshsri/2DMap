@@ -121,6 +121,14 @@ def main():
 
     print(f"  Result : {len(frame_perception)} frame perceptions")
 
+    # ── Stage 2 audit: self-consistency check ─────────────────────────────────
+    _header(2, "Self-consistency audit")
+    from pipeline.stage2_audit import audit_perceptions
+    audit_result = audit_perceptions(frame_perception, frame_motion)
+    _save_json(out_dir / "stage2_audit.json", audit_result)
+    # Feed corrected perceptions into Stage 3 instead of raw VLM output
+    frame_perception = audit_result["corrected_perceptions"]
+
     # ── Stage 3: Segmentation + transitions ───────────────────────────────────
     _header(3, "Segment grouping & transition detection")
     cache3 = out_dir / "stage3_segments.json"

@@ -1,19 +1,23 @@
 """
 Stage 4 — Global floor-plan structuring via Llama 3.2:3b (Ollama).
 
-Changes from v1
+Changes from v2
 ---------------
-* Added _slim_segments(): strips frame-level noise (frame_ids arrays, raw
-  motion vectors, per-frame spatial characteristics) before the LLM call.
-  A 3B model's context window fills quickly when full segment dicts are
-  serialised; sending only the fields that drive floor-plan layout decisions
-  (segment_id, room_type, size_hint, door_locations, confidence) measurably
-  improves structured JSON output quality from small models.
+* _attach_untraversed_doors() upgraded: for every untraversed door, a "ghost"
+  room stub is generated and inserted into the floor plan. Ghost rooms represent
+  spaces the camera observed through a doorway but never entered.
 
-Feeds the stage-3 segment summaries and transitions to Llama and asks it
-to produce a single coherent JSON floor-plan spec.  If Ollama is not
-reachable the fallback generator builds the spec directly from the
-segment data without any LLM call.
+  Ghost room properties:
+    - id: "GHOST_<side>_<source_room_id>"  (e.g. "GHOST_right_R0")
+    - type: VLM's leads_to guess from the door (or "unknown")
+    - ghost: True  ← Stage 5 uses this flag to draw dashed outlines
+    - size_hint / width / height: derived from room type (bathroom→small, etc.)
+    - door_locations: [] (ghost rooms have no further known connections)
+
+  A synthetic transition is also added so assign_room_positions() places the
+  ghost room on the geometrically correct side of the originating room.
+
+* _slim_segments(): updated to include to_room_type from rich door schema.
 """
 import json
 import re
@@ -78,6 +82,22 @@ Required output schema:
 }}"""
 
 
+# ── room type → sensible ghost size ─────────────────────────────────────────
+
+_GHOST_SIZE_BY_TYPE: dict[str, str] = {
+    "bathroom":    "very_small",
+    "office":      "small",
+    "bedroom":     "medium",
+    "kitchen":     "small",
+    "entrance":    "small",
+    "corridor":    "small",
+    "living_room": "medium",
+    "stairwell":   "small",
+    "lobby":       "medium",
+    "unknown":     "small",
+}
+
+
 # ── public API ───────────────────────────────────────────────────────────────
 
 def generate_floor_plan(segments: list, transitions: list) -> dict:
@@ -107,36 +127,28 @@ def generate_floor_plan(segments: list, transitions: list) -> dict:
 def _slim_segments(segments: list) -> list:
     """
     Strip frame-level detail from segments before the LLM call.
-
-    Fields removed
-    --------------
-    frame_ids            — can be a long list; useless for layout decisions
-    segment_motion       — raw motion vectors; not needed by the LLM
-    spatial_characteristics — per-frame text; inflates context without value
-    is_boundary_heuristic   — pipeline-internal flag; LLM does not need it
-
-    Fields kept
-    -----------
-    segment_id       — lets the LLM reference segments in its output
-    room_type        — the primary layout signal
-    size_hint        — drives room dimensions
-    door_locations   — drives adjacency and door placement
-    objects_visible  — top-5 observed objects; helps LLM confirm room type
-    view_descriptions — up to 2 unique scene descriptions; extra context
-    confidence       — lets the LLM weight ambiguous segments lower
+    Includes to_room_type from the new rich door schema.
     """
-    return [
-        {
+    slimmed = []
+    for s in segments:
+        slim_doors = []
+        for d in s.get("door_locations", []):
+            slim_doors.append({
+                "side":             d["side"],
+                "to_room_type":     d.get("to_room_type", "unknown"),
+                "confidence":       d.get("confidence", 0.5),
+                "likely_traversed": d.get("likely_traversed", False),
+            })
+        slimmed.append({
             "segment_id":      s["segment_id"],
             "room_type":       s["room_type"],
             "size_hint":       s["size_hint"],
-            "door_locations":  s.get("door_locations", []),
+            "door_locations":  slim_doors,
             "objects_visible": s.get("objects_visible", [])[:5],
             "view_descriptions": s.get("view_descriptions", [])[:2],
             "confidence":      s["confidence"],
-        }
-        for s in segments
-    ]
+        })
+    return slimmed
 
 
 # ── Ollama I/O ───────────────────────────────────────────────────────────────
@@ -183,7 +195,6 @@ def _parse_and_validate(raw: str, segments: list, transitions: list) -> dict:
     if not rooms:
         return _fallback_floor_plan(segments, transitions)
 
-    # Ensure rooms have correct IDs and dimensions
     room_ids: set = set()
     for i, room in enumerate(rooms):
         if not room.get("id"):
@@ -199,15 +210,14 @@ def _parse_and_validate(raw: str, segments: list, transitions: list) -> dict:
         if "door_locations" not in room:
             room["door_locations"] = []
 
-    # Filter transitions to those referencing valid room IDs
+        room.setdefault("ghost", False)
+
     valid_transitions = [
         t for t in plan.get("transitions", [])
         if t.get("from_room") in room_ids and t.get("to_room") in room_ids
     ]
 
-    # Rebuild door_locations from validated transitions — Llama's guesses are
-    # unreliable at 3B scale and may disagree with the transition door_position,
-    # causing the rendered doors to be on the wrong wall.
+    # Rebuild door_locations from validated transitions
     room_lookup = {r["id"]: r for r in rooms}
     for r in rooms:
         r["door_locations"] = []
@@ -217,11 +227,14 @@ def _parse_and_validate(raw: str, segments: list, transitions: list) -> dict:
             room["door_locations"].append({
                 "side":       t["door_position"],
                 "to_room_id": t["to_room"],
+                "traversed":  True,
             })
 
-    # Recompute camera_path from positions (LLM coords are unreliable at 3B scale)
-    position_map = assign_room_positions(rooms, valid_transitions)
-    camera_path  = compute_camera_path(rooms, valid_transitions, position_map)
+    # Add untraversed doors + ghost rooms for unvisited spaces
+    _attach_untraversed_doors_and_ghosts(rooms, segments, valid_transitions)
+
+    position_map, heading_map = assign_room_positions(rooms, valid_transitions)
+    camera_path  = compute_camera_path(rooms, valid_transitions, position_map, heading_map)
 
     return {
         "rooms":       rooms,
@@ -255,18 +268,17 @@ def _fallback_floor_plan(segments: list, transitions: list) -> dict:
             "width":          w,
             "height":         h,
             "door_locations": [],
+            "ghost":          False,
         })
         room_id_by_type[rt] = rid
 
-    # If everything was "unknown", create a single placeholder room
     if not rooms:
         rooms           = [{
             "id": "R0", "type": "unknown", "size_hint": "medium",
-            "width": 4.0, "height": 4.0, "door_locations": [],
+            "width": 4.0, "height": 4.0, "door_locations": [], "ghost": False,
         }]
         room_id_by_type = {"unknown": "R0"}
 
-    # Map stage-3 transitions to room IDs
     plan_transitions: list = []
     for t in transitions:
         fr = room_id_by_type.get(t["from_room_type"])
@@ -280,7 +292,6 @@ def _fallback_floor_plan(segments: list, transitions: list) -> dict:
                 "confidence":    t.get("confidence", 0.5),
             })
 
-    # Attach door_locations to rooms based on transitions
     _room_lookup = {r["id"]: r for r in rooms}
     for t in plan_transitions:
         room = _room_lookup.get(t["from_room"])
@@ -288,13 +299,112 @@ def _fallback_floor_plan(segments: list, transitions: list) -> dict:
             room["door_locations"].append({
                 "side":       t["door_position"],
                 "to_room_id": t["to_room"],
+                "traversed":  True,
             })
 
-    position_map = assign_room_positions(rooms, plan_transitions)
-    camera_path  = compute_camera_path(rooms, plan_transitions, position_map)
+    _attach_untraversed_doors_and_ghosts(rooms, segments, plan_transitions)
+
+    position_map, heading_map = assign_room_positions(rooms, plan_transitions)
+    camera_path  = compute_camera_path(rooms, plan_transitions, position_map, heading_map)
 
     return {
         "rooms":       rooms,
         "transitions": plan_transitions,
         "camera_path": camera_path,
     }
+
+
+# ── shared helper: untraversed doors + ghost rooms ───────────────────────────
+
+def _attach_untraversed_doors_and_ghosts(rooms: list, segments: list,
+                                          transitions: list) -> None:
+    """
+    For each real room:
+      1. Find door sides the VLM observed that are NOT already covered by a
+         traversed transition door.
+      2. For each such door, add it to the room's door_locations as traversed=False.
+      3. Create a "ghost" room stub representing the unvisited space beyond that door.
+      4. Add a synthetic (ghost) transition so assign_room_positions() places
+         the ghost room on the correct wall.
+
+    Ghost rooms are rendered as dashed outlines in Stage 5, showing the user
+    there is a room beyond the door that the camera did not enter.
+    """
+    seg_by_type = {s["room_type"]: s for s in segments}
+    existing_room_ids = {r["id"] for r in rooms}
+
+    ghost_rooms:       list[dict] = []
+    ghost_transitions: list[dict] = []
+
+    for room in rooms:
+        if room.get("ghost", False):
+            continue
+
+        rtype = room.get("type", "unknown")
+        rid   = room["id"]
+        seg   = seg_by_type.get(rtype)
+        if not seg:
+            continue
+
+        traversed_sides: set = {
+            d["side"] for d in room.get("door_locations", [])
+            if d.get("traversed", True)
+        }
+
+        seen_ghost_sides: set = set()  # prevent duplicate ghost rooms on same side
+
+        for d in seg.get("door_locations", []):
+            side = d["side"]
+            if side == "none" or side in traversed_sides or side in seen_ghost_sides:
+                continue
+
+            # Add untraversed door marker to the real room
+            room["door_locations"].append({
+                "side":       side,
+                "to_room_id": None,   # will be updated below
+                "traversed":  False,
+                "confidence": d.get("confidence", 0.5),
+            })
+            seen_ghost_sides.add(side)
+
+            # Build ghost room
+            leads_to  = d.get("to_room_type", "unknown") or "unknown"
+            ghost_sh  = _GHOST_SIZE_BY_TYPE.get(leads_to, "small")
+            g_w, g_h  = SIZE_HINT_DIMS[ghost_sh]
+            ghost_id  = f"GHOST_{side}_{rid}"
+
+            # Avoid duplicates if the same ghost_id was already created
+            if ghost_id in existing_room_ids:
+                continue
+            existing_room_ids.add(ghost_id)
+
+            ghost_room = {
+                "id":             ghost_id,
+                "type":           leads_to,
+                "size_hint":      ghost_sh,
+                "width":          g_w,
+                "height":         g_h,
+                "door_locations": [],   # ghost rooms have no further known doors
+                "ghost":          True,
+            }
+            ghost_rooms.append(ghost_room)
+
+            # Update the untraversed door entry to point at the ghost room
+            for dl in room["door_locations"]:
+                if dl.get("side") == side and dl.get("traversed") is False and dl.get("to_room_id") is None:
+                    dl["to_room_id"] = ghost_id
+                    break
+
+            # Synthetic transition — positions ghost room correctly
+            ghost_transitions.append({
+                "detected":      False,
+                "from_room":     rid,
+                "to_room":       ghost_id,
+                "door_position": side,
+                "confidence":    d.get("confidence", 0.5),
+                "ghost":         True,
+            })
+
+    # Extend rooms and transitions lists in-place
+    rooms.extend(ghost_rooms)
+    transitions.extend(ghost_transitions)

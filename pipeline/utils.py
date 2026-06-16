@@ -8,87 +8,101 @@ SIZE_HINT_DIMS = {
     "very_large": (6.0, 6.0),
 }
 
-_DIRECTION_OFFSETS = {
-    "right": (1,  0),
-    "left":  (-1, 0),
-    "front": (0,  1),
-    "back":  (0, -1),
-}
-
-
-def assign_room_positions(rooms: list, transitions: list) -> dict:
+def assign_room_positions(rooms: list, transitions: list) -> tuple[dict, dict]:
     """
-    Return {room_id: (x, y)} bottom-left corner for every room.
+    Return position_map {room_id: (x, y)} and heading_map {room_id: heading_deg}.
 
-    Rooms are placed adjacently according to transition door_position:
-      right  → next room is placed to the +x side
-      left   → next room is placed to the -x side
-      front  → next room is placed to the +y side
-      back   → next room is placed to the -y side
+    Rooms are placed adjacently using a global coordinate system.
+    The camera starts in the first room facing North (heading 0).
+    As it goes through doors, the local door side (left/right/front/back)
+    is converted to a global direction to place the next room, and the
+    camera's heading rotates accordingly.
     """
     if not rooms:
-        return {}
+        return {}, {}
 
     position_map: dict = {}
-    position_map[rooms[0]["id"]] = (0.0, 0.0)
+    heading_map: dict = {}
+    
+    start_id = rooms[0]["id"]
+    position_map[start_id] = (0.0, 0.0)
+    heading_map[start_id] = 0.0
 
     room_lookup = {r["id"]: r for r in rooms}
 
+    # Adjacency list for transitions
+    adj = {r["id"]: [] for r in rooms}
     for t in transitions:
-        from_id  = t.get("from_room")
-        to_id    = t.get("to_room")
-        door_pos = t.get("door_position", "front")
+        # Ignore invalid transitions missing from rooms
+        if t.get("from_room") in adj:
+            adj[t["from_room"]].append(t)
 
-        if from_id not in position_map or to_id in position_map:
-            continue
+    # BFS to place all rooms
+    queue = [start_id]
+    visited = {start_id}
 
-        from_room = room_lookup.get(from_id, {})
-        to_room   = room_lookup.get(to_id,   {})
+    while queue:
+        curr = queue.pop(0)
+        fx, fy = position_map[curr]
+        fhding = heading_map[curr]
+        fw = room_lookup[curr].get("width",  4.0)
+        fh = room_lookup[curr].get("height", 4.0)
 
-        fx, fy = position_map[from_id]
-        fw = from_room.get("width",  4.0)
-        fh = from_room.get("height", 4.0)
-        tw = to_room.get("width",    4.0)
-        th = to_room.get("height",   4.0)
+        for t in adj[curr]:
+            to_id = t.get("to_room")
+            if not to_id or to_id in position_map:
+                continue
 
-        dx, dy = _DIRECTION_OFFSETS.get(door_pos, (0, 1))
+            local_side = t.get("door_position", "front")
 
-        if dx == 1:       # right
-            tx = fx + fw
-            ty = fy + (fh - th) / 2
-        elif dx == -1:    # left
-            tx = fx - tw
-            ty = fy + (fh - th) / 2
-        elif dy == 1:     # front
-            tx = fx + (fw - tw) / 2
-            ty = fy + fh
-        else:             # back
-            tx = fx + (fw - tw) / 2
-            ty = fy - th
+            # Local to Global mapping
+            rel_angle = {"front": 0, "right": 90, "back": 180, "left": 270}.get(local_side, 0)
+            abs_heading = (fhding + rel_angle) % 360
 
-        position_map[to_id] = (round(tx, 2), round(ty, 2))
+            tw = room_lookup[to_id].get("width",  4.0)
+            th = room_lookup[to_id].get("height", 4.0)
+
+            # Place next room based on absolute direction
+            if abs_heading == 0:       # North (+Y)
+                tx = fx + (fw - tw) / 2
+                ty = fy + fh
+            elif abs_heading == 90:    # East (+X)
+                tx = fx + fw
+                ty = fy + (fh - th) / 2
+            elif abs_heading == 180:   # South (-Y)
+                tx = fx + (fw - tw) / 2
+                ty = fy - th
+            else:                      # West (-X) (abs_heading == 270)
+                tx = fx - tw
+                ty = fy + (fh - th) / 2
+
+            position_map[to_id] = (round(tx, 2), round(ty, 2))
+            heading_map[to_id] = abs_heading
+            
+            queue.append(to_id)
+            visited.add(to_id)
 
     # Any rooms that didn't get placed via transitions go in a column on the right
     placed_xs = [v[0] for v in position_map.values()]
     x_stack = max(placed_xs) + 8.0 if placed_xs else 0.0
     y_stack = 0.0
     for room in rooms:
-        if room["id"] not in position_map:
-            position_map[room["id"]] = (round(x_stack, 2), round(y_stack, 2))
+        rid = room["id"]
+        if rid not in position_map:
+            position_map[rid] = (round(x_stack, 2), round(y_stack, 2))
+            heading_map[rid] = 0.0
             y_stack += room.get("height", 4.0) + 1.0
 
-    return position_map
+    return position_map, heading_map
 
 
-def compute_camera_path(rooms: list, transitions: list, position_map: dict) -> list:
+def compute_camera_path(rooms: list, transitions: list, position_map: dict, heading_map: dict) -> list:
     """
     Build a camera_path list of {x, y, heading_deg, from_segment_id, to_segment_id}
     by walking room centres in transition order.
     """
     if not rooms:
         return []
-
-    _HEADING = {"right": 90.0, "left": -90.0, "front": 0.0, "back": 180.0}
 
     # ordered room list following transition chain
     ordered_ids: list[str] = []
@@ -118,18 +132,13 @@ def compute_camera_path(rooms: list, transitions: list, position_map: dict) -> l
         cx = round(x + room.get("width",  4.0) / 2, 2)
         cy = round(y + room.get("height", 4.0) / 2, 2)
 
-        heading = 0.0
-        if i > 0:
-            prev_id = ordered_ids[i - 1]
-            for t in transitions:
-                if t.get("from_room") == prev_id and t.get("to_room") == rid:
-                    heading = _HEADING.get(t.get("door_position", "front"), 0.0)
-                    break
+        cam_heading = heading_map.get(rid, 0.0)
+        draw_angle = (90 - cam_heading) % 360
 
         path.append({
             "x": cx,
             "y": cy,
-            "heading_deg": heading,
+            "heading_deg": draw_angle, 
             "from_segment_id": seg_counter,
             "to_segment_id": seg_counter + 1,
         })

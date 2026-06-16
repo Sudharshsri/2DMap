@@ -1,26 +1,23 @@
 """
 Stage 3 — Frame-to-segment grouping and transition detection.
 
-Changes from v2
+Changes from v3
 ---------------
-* _smooth_room_types(): now respects significant_change boundaries from Stage 2.
-  A frame flagged significant_change=True is never smoothed away, and the
-  look-behind window does not cross such a frame for its neighbours either.
-  This prevents smoothing from reaching across a genuine room transition.
+* _build_segment() updated to handle the new rich door schema from Stage 2 v3:
+    doors_visible is now a list of objects:
+      {"side": "left", "open": true, "leads_to": "corridor", "confidence": 0.85,
+       "likely_traversed": false}
+    Aggregation now:
+      - Counts each side's frequency across frames (threshold: >= 30% of frames)
+      - Records the modal "leads_to" room type for each surviving side
+      - Sets likely_traversed=True on a door side if ANY frame tagged it as such
+        (via Stage 2 Audit Check 7)
+      - Preserves open_count so Stage 4 can rank which door the camera entered
 
-* _build_segment() boundary heuristic now combines two independent signals:
-    rotation_boundary — Stage 1 optical-flow rotation (existing)
-    vlm_boundary      — fraction of frames where Stage 2 flagged significant_change
-  Either signal alone is sufficient to mark a segment as a boundary.
-
-* _build_segment() aggregates two new Stage 2 fields:
-    objects_visible   — top-10 objects by cross-frame frequency
-    view_descriptions — deduplicated list of per-frame view_description strings
-  Both are stored on the segment dict for Stage 4 context.
-
-* segment_motion gains a new vlm_direction field derived from the VLM's
-  camera_movement labels (Stage 2 changes_from_previous), complementing the
-  optical-flow direction from Stage 1.
+* _smooth_room_types(): unchanged — respects significant_change boundaries.
+* _build_segment() boundary heuristic: unchanged — rotation + VLM sig-change.
+* detect_transitions(): unchanged in logic, but door_position now prefers
+  the highest-confidence door from the new rich aggregation.
 """
 from collections import Counter
 
@@ -33,8 +30,6 @@ _MIN_SEGMENT_FRAMES    = 2       # segments shorter than this get merged
 _SMOOTH_WINDOW         = 3       # temporal smoothing window (odd number works best)
 
 # Secondary semantic normalization — mirrors Stage 2's SEMANTIC_CANONICAL.
-# Catches synonyms that slipped through (e.g. loaded from a cached stage2 JSON
-# produced before the vocabulary was locked down).
 SEMANTIC_CANONICAL: dict[str, str] = {
     "hallway":    "corridor",
     "passage":    "corridor",
@@ -119,8 +114,7 @@ def detect_transitions(segments: list) -> list:
     A transition is *detected* when room types differ AND any of:
       - seg_a or seg_b has is_boundary_heuristic=True  (rotation OR vlm_significant_change)
       - seg_a has visible door locations
-      - the first frame of seg_b flagged significant_change=True  (direct VLM evidence
-        of a scene shift at the exact boundary between the two segments)
+      - the first frame of seg_b flagged significant_change=True
     """
     transitions: list[dict] = []
 
@@ -141,17 +135,23 @@ def detect_transitions(segments: list) -> list:
         )
         detected = a_boundary or b_boundary or a_has_door or b_has_door
 
-        # Best door side: prefer VLM door reports, then fall back to optical-flow
-        # rotation of the *entering* segment.  A negative rotation means the camera
-        # turned left to enter the next room (door is on the left wall); positive
-        # means it turned right.
+        # Best door side: prefer likely_traversed doors first, then highest confidence
         door_position = "front"
         if seg_a.get("door_locations"):
-            best = max(seg_a["door_locations"], key=lambda d: d["confidence"])
-            door_position = best["side"]
+            real_doors = [d for d in seg_a["door_locations"] if d["side"] != "none"]
+            if real_doors:
+                # Prefer likely_traversed, then highest confidence
+                traversed = [d for d in real_doors if d.get("likely_traversed")]
+                pool = traversed if traversed else real_doors
+                best = max(pool, key=lambda d: d["confidence"])
+                door_position = best["side"]
         elif seg_b.get("door_locations"):
-            best = max(seg_b["door_locations"], key=lambda d: d["confidence"])
-            door_position = best["side"]
+            real_doors = [d for d in seg_b["door_locations"] if d["side"] != "none"]
+            if real_doors:
+                traversed = [d for d in real_doors if d.get("likely_traversed")]
+                pool = traversed if traversed else real_doors
+                best = max(pool, key=lambda d: d["confidence"])
+                door_position = best["side"]
         else:
             entering_rot = seg_b.get("segment_motion", {}).get("rotation_deg", 0.0)
             if entering_rot < -10.0:
@@ -182,33 +182,19 @@ def _smooth_room_types(perceptions: list, window: int = 3) -> list:
 
     Boundary-awareness rules
     ------------------------
-    1. A frame with significant_change=True is never overwritten — it marks a
-       genuine scene transition and its label should stand as-is.
+    1. A frame with significant_change=True is never overwritten.
     2. When building the smoothing window for frame i, any look-behind frame
-       that has significant_change=True is skipped.  This prevents the majority
-       vote from reaching across a transition boundary.
-
-    Normal smoothing rules (unchanged from v2)
-    ------------------------------------------
-    A frame's label is only overwritten when:
-      (a) the frame is 'unknown', OR
-      (b) a different label has a strict majority in the window.
-    Confident, consistent runs are never altered; only lone outliers are
-    corrected (e.g. a single 'kitchen' between two 'living_room' frames).
+       that has significant_change=True is skipped.
     """
     n    = len(perceptions)
     half = window // 2
     smoothed = []
 
     for i, fp in enumerate(perceptions):
-        # The first frame has no previous-frame comparison context (sig is always False
-        # for it by design).  Never smooth it — its label is the best evidence we have
-        # for the room where the walk starts.
         if i == 0:
             smoothed.append(fp)
             continue
 
-        # Rule 1: significant-change frames are immune to smoothing
         if fp.get("changes_from_previous", {}).get("significant_change", False):
             smoothed.append(fp)
             continue
@@ -216,12 +202,10 @@ def _smooth_room_types(perceptions: list, window: int = 3) -> list:
         lo = max(0, i - half)
         hi = min(n, i + half + 1)
 
-        # Rule 2: build the window, skipping look-behind significant-change frames
         window_types = []
         for j in range(lo, hi):
             p = perceptions[j]
             if j < i and p.get("changes_from_previous", {}).get("significant_change", False):
-                # Stop look-behind at this boundary — don't include it or anything before it
                 continue
             if p["room_type"] != "unknown":
                 window_types.append(p["room_type"])
@@ -245,9 +229,6 @@ def _merge_short_segments(segments: list, motion_by_id: dict) -> list:
     """
     Iteratively merge segments shorter than _MIN_SEGMENT_FRAMES into the
     neighbour with the higher confidence score.
-
-    Only frame_ids are transferred; the absorbing segment's room_type and other
-    properties are preserved.  Segment IDs are re-numbered after all merges.
     """
     if len(segments) <= 1:
         return segments
@@ -259,19 +240,12 @@ def _merge_short_segments(segments: list, motion_by_id: dict) -> list:
             if len(seg["frame_ids"]) >= _MIN_SEGMENT_FRAMES:
                 continue
 
-            # Never merge the first or last segment — they represent where the
-            # walkthrough starts and ends, so even a single frame is meaningful.
             if i == 0 or i == len(segments) - 1:
                 continue
 
-            if i == 0:
-                target_idx = 1
-            elif i == len(segments) - 1:
-                target_idx = i - 1
-            else:
-                prev_conf = segments[i - 1]["confidence"]
-                next_conf = segments[i + 1]["confidence"]
-                target_idx = i - 1 if prev_conf >= next_conf else i + 1
+            prev_conf = segments[i - 1]["confidence"]
+            next_conf = segments[i + 1]["confidence"]
+            target_idx = i - 1 if prev_conf >= next_conf else i + 1
 
             target = segments[target_idx]
 
@@ -282,7 +256,7 @@ def _merge_short_segments(segments: list, motion_by_id: dict) -> list:
 
             segments.pop(i)
             changed = True
-            break  # restart scan — indices have shifted
+            break
 
     for idx, seg in enumerate(segments):
         seg["segment_id"] = idx
@@ -296,10 +270,6 @@ def _build_segment(segment_id: int, frames: list,
     n         = len(frames)
 
     # ── room_type: weighted confidence voting ─────────────────────────────────
-    # Each frame contributes its full confidence to its room_type vote and a
-    # fractional credit to alternative_type when confidence is low.  A single
-    # uncertain frame cannot flip the segment label, but many low-confidence
-    # frames agreeing on the same alternative can influence the result.
     room_type_votes: Counter = Counter()
     for f in frames:
         rt   = f.get("room_type", "unknown")
@@ -321,24 +291,54 @@ def _build_segment(segment_id: int, frames: list,
     hints     = [f["size_hint"] for f in frames if f.get("size_hint") in _SIZE_HINT_ORDER]
     size_hint = Counter(hints).most_common(1)[0][0] if hints else "medium"
 
-    # ── door_locations: threshold-based aggregation ───────────────────────────
-    door_counts: Counter = Counter()
-    for f in frames:
-        for d in f.get("doors_visible", ["none"]):
-            door_counts[d] += 1
+    # ── door_locations: aggregate rich door objects ───────────────────────────
+    # For each door side: count appearances, sum confidence, collect leads_to,
+    # and propagate likely_traversed flag.
+    side_data: dict[str, dict] = {}  # side -> {count, conf_sum, leads_to_counts, likely_traversed, open_count}
 
-    door_locations = [
-        {
-            "side":         side,
-            "to_room_type": "unknown",
-            "confidence":   round(count / n, 2),
-        }
-        for side, count in door_counts.items()
-        if side != "none" and count / n >= _DOOR_THRESHOLD
-    ]
+    for f in frames:
+        for d in f.get("doors_visible", []):
+            side = d.get("side", "none")
+            if side == "none":
+                continue
+            if side not in side_data:
+                side_data[side] = {
+                    "count":            0,
+                    "conf_sum":         0.0,
+                    "leads_to_counts":  Counter(),
+                    "likely_traversed": False,
+                    "open_count":       0,
+                }
+            entry = side_data[side]
+            entry["count"]       += 1
+            entry["conf_sum"]    += d.get("confidence", 0.5)
+            leads_to = d.get("leads_to", "unknown")
+            if leads_to and leads_to != "unknown":
+                entry["leads_to_counts"][leads_to] += 1
+            if d.get("likely_traversed", False):
+                entry["likely_traversed"] = True
+            if d.get("open", False):
+                entry["open_count"] += 1
+
+    door_locations = []
+    for side, data in side_data.items():
+        frac = data["count"] / n
+        if frac >= _DOOR_THRESHOLD:
+            avg_conf    = round(data["conf_sum"] / data["count"], 2)
+            leads_to_ctr = data["leads_to_counts"]
+            leads_to    = leads_to_ctr.most_common(1)[0][0] if leads_to_ctr else "unknown"
+            door_locations.append({
+                "side":             side,
+                "to_room_type":     leads_to,
+                "confidence":       avg_conf,
+                "likely_traversed": data["likely_traversed"],
+                "open_fraction":    round(data["open_count"] / data["count"], 2),
+            })
+
+    # Sort by confidence descending
+    door_locations.sort(key=lambda d: d["confidence"], reverse=True)
 
     # ── boundary heuristic: optical-flow rotation + VLM significant_change ────
-    # Two independent signals: either alone is sufficient to mark a boundary.
     rotations         = [abs(motion_by_id.get(fid, {}).get("rotation_deg", 0.0))
                          for fid in frame_ids]
     high_rot_count    = sum(1 for r in rotations if r >= _ROTATION_BOUNDARY_DEG)
