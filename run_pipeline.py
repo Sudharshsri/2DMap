@@ -160,7 +160,9 @@ def main():
         floor_plan = _load_json(cache4)
     else:
         from pipeline.stage4_llm_structuring import generate_floor_plan
-        floor_plan = generate_floor_plan(segments, transitions)
+        # Pass raw frame_perception so Stage 4 can create ghost rooms for
+        # doors that Stage 3 filtered out (door-only observations safety net)
+        floor_plan = generate_floor_plan(segments, transitions, frame_perception)
         _save_json(cache4, floor_plan)
 
     rooms = floor_plan.get("rooms", [])

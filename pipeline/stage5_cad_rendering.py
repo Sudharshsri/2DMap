@@ -1,28 +1,24 @@
 """
 Stage 5 — CAD rendering: DXF (ezdxf) + PNG (Matplotlib).
 
-Converts the global floor-plan JSON into:
-  • floor_plan.dxf  – CAD-ready drawing with layers for rooms, doors,
-                      ghost rooms, camera path, and text labels.
-  • floor_plan.png  – colour-coded raster image for quick review.
+Changes from v3 (proximity-aware room labeling)
+------------------------------------------------
+Room name labels are now ONLY shown for rooms the camera was physically
+inside or very close to. This prevents labels from cluttering the map for
+rooms the camera merely walked past or observed distantly.
 
-Ghost room rendering (v3)
---------------------------
-Rooms with ghost=True represent spaces the camera observed through a doorway
-but never entered. They are rendered distinctly:
+Labeling rules:
+  INSIDE   : any camera path waypoint falls within the room's bounding box
+             (with a small 0.5 m margin to account for waypoint at room centre)
+  NEAR     : any camera path waypoint is within max(width, height) * 1.2 of
+             the room's centre
+  → Full label shown: room_type + room_id + size_hint (as before)
+  → Distant room:     only a faint italic room_type initial (first letter)
+                      so the user can still identify the room type at a glance
 
-PNG:
-  - No fill (transparent interior)
-  - Dashed border (linestyle="--", linewidth=1.5, edgecolor="#888888")
-  - Diagonal hatching ("///") in light gray to indicate "empty/unknown"
-  - Italic label: room type + "[?unvisited]"
-  - alpha=0.35 so the floor grid shows through
-  - Semi-transparent door arc on their wall side (orange dashed)
+Ghost rooms always show their "?" label (camera never entered).
 
-DXF:
-  - Separate layer "GHOST_ROOMS" (color=8, gray)
-  - Outline drawn with DASHED linetype
-  - Label on LABELS layer suffixed with " [?]"
+All other rendering (ghost outlines, doors, camera path) is unchanged from v3.
 """
 import math
 import ezdxf
@@ -56,6 +52,9 @@ _GHOST_ALPHA       = 0.35
 _DOOR_WIDTH     = 0.8    # metres
 _WALL_THICKNESS = 0.15   # metres (visual only in DXF labels)
 
+# Proximity multiplier: camera within (max_dim * factor) of room centre = "near"
+_PROXIMITY_FACTOR = 1.2
+
 
 # ── public API ───────────────────────────────────────────────────────────────
 
@@ -80,13 +79,60 @@ def render_floor_plan(floor_plan: dict, dxf_path: str, png_path: str) -> None:
     if not rooms:
         print("  WARNING: no rooms in floor plan – output files will be empty stubs.")
 
-    _render_dxf(rooms, camera_path, position_map, heading_map, dxf_path)
-    _render_png(rooms, camera_path, position_map, heading_map, png_path)
+    # Compute proximity set — rooms the camera was inside or near
+    camera_near_set = _camera_proximity_set(camera_path, rooms, position_map)
+
+    _render_dxf(rooms, camera_path, position_map, heading_map,
+                camera_near_set, dxf_path)
+    _render_png(rooms, camera_path, position_map, heading_map,
+                camera_near_set, png_path)
+
+
+# ── proximity helper ─────────────────────────────────────────────────────────
+
+def _camera_proximity_set(camera_path: list, rooms: list,
+                           position_map: dict) -> set:
+    """
+    Return a set of room IDs for which at least one camera waypoint is either:
+      - INSIDE the room bounding box (expanded by 0.5 m margin), OR
+      - NEAR the room centre (within max(w,h) * _PROXIMITY_FACTOR)
+
+    Ghost rooms are never added (they are handled separately in the renderer).
+    """
+    near: set = set()
+    margin = 0.5  # metres — expand bbox to catch waypoints just at the edge
+
+    for room in rooms:
+        if room.get("ghost", False):
+            continue
+        rid   = room["id"]
+        x, y  = position_map.get(rid, (0.0, 0.0))
+        w, h  = room.get("width", 4.0), room.get("height", 4.0)
+        cx    = x + w / 2
+        cy    = y + h / 2
+        prox  = max(w, h) * _PROXIMITY_FACTOR
+
+        for wp in camera_path:
+            wx, wy = wp["x"], wp["y"]
+
+            # Inside check (with margin)
+            inside = (
+                (x - margin) <= wx <= (x + w + margin) and
+                (y - margin) <= wy <= (y + h + margin)
+            )
+            # Proximity check
+            dist = math.hypot(wx - cx, wy - cy)
+            if inside or dist <= prox:
+                near.add(rid)
+                break  # one waypoint is enough
+
+    return near
 
 
 # ── DXF ──────────────────────────────────────────────────────────────────────
 
-def _render_dxf(rooms, camera_path, position_map, heading_map, out_path):
+def _render_dxf(rooms, camera_path, position_map, heading_map,
+                camera_near_set: set, out_path: str):
     doc = ezdxf.new("R2010")
     doc.units = ezdxf.units.M
     msp = doc.modelspace()
@@ -99,6 +145,7 @@ def _render_dxf(rooms, camera_path, position_map, heading_map, out_path):
         ("UNVISITED_DOORS",8),
         ("CAMERA_PATH",    1),
         ("LABELS",         2),
+        ("LABELS_DISTANT", 9),
     ]:
         doc.layers.add(name, color=color)
 
@@ -115,13 +162,21 @@ def _render_dxf(rooms, camera_path, position_map, heading_map, out_path):
             dxfattribs={"layer": layer, "closed": True},
         )
 
-        # Room label
-        suffix = " [?]" if is_ghost else ""
-        label  = f"{room['type']}{suffix}  [{rid}]  ({room['size_hint']})"
+        # Room label — full for near/inside rooms, abbreviated for distant ones
+        if is_ghost:
+            label = f"{room['type']} [?]  [{rid}]"
+        elif rid in camera_near_set:
+            label = f"{room['type']}  [{rid}]  ({room['size_hint']})"
+            layer_lbl = "LABELS"
+        else:
+            label = f"{room['type'][0].upper()}?"
+            layer_lbl = "LABELS_DISTANT"
+
+        label_layer = "LABELS" if is_ghost else layer_lbl
         msp.add_text(
             label,
             dxfattribs={
-                "layer":  "LABELS",
+                "layer":  label_layer,
                 "height": min(w, h) * 0.10,
                 "insert": (x + w / 2, y + h / 2),
                 "halign": 1,
@@ -131,7 +186,7 @@ def _render_dxf(rooms, camera_path, position_map, heading_map, out_path):
             align=ezdxf.enums.TextEntityAlignment.MIDDLE_CENTER,
         )
 
-    # Doors (traversed = solid DOORS; untraversed = dashed UNVISITED_DOORS)
+    # Doors
     for room in rooms:
         rid  = room["id"]
         x, y = position_map.get(rid, (0.0, 0.0))
@@ -173,7 +228,8 @@ def _draw_arrow_dxf(msp, x, y, angle_rad, layer):
 
 # ── PNG ───────────────────────────────────────────────────────────────────────
 
-def _render_png(rooms, camera_path, position_map, heading_map, out_path):
+def _render_png(rooms, camera_path, position_map, heading_map,
+                camera_near_set: set, out_path: str):
     fig, ax = plt.subplots(figsize=(18, 12))
     ax.set_aspect("equal")
     ax.set_facecolor("#F0F0F0")
@@ -188,7 +244,8 @@ def _render_png(rooms, camera_path, position_map, heading_map, out_path):
     ghost_rooms = [r for r in rooms if r.get("ghost", False)]
 
     for room in real_rooms:
-        _draw_real_room(ax, room, position_map, legend_patches)
+        camera_near = room["id"] in camera_near_set
+        _draw_real_room(ax, room, position_map, legend_patches, camera_near)
 
     for room in ghost_rooms:
         _draw_ghost_room(ax, room, position_map)
@@ -197,7 +254,7 @@ def _render_png(rooms, camera_path, position_map, heading_map, out_path):
                 mpatches.Patch(
                     facecolor="none", edgecolor=_GHOST_EDGE_COLOR,
                     hatch="///", alpha=_GHOST_ALPHA + 0.2,
-                    label="Ghost room (unvisited, camera observed door only)",
+                    label="Ghost room (unvisited — camera observed door only)",
                 )
             )
             ghost_legend_added = True
@@ -271,7 +328,8 @@ def _render_png(rooms, camera_path, position_map, heading_map, out_path):
     ax.margins(0.15)
     ax.set_title(
         "2D Floor Plan  —  generated from indoor video\n"
-        "(solid rooms = camera visited  |  dashed rooms = observed through doorway only)",
+        "(solid rooms = camera visited  |  dashed rooms = observed through doorway only)\n"
+        "(full label = camera was inside/near  |  letter only = camera was distant)",
         fontsize=13, fontweight="bold", pad=14,
     )
     ax.set_xlabel("X  (metres)")
@@ -284,8 +342,13 @@ def _render_png(rooms, camera_path, position_map, heading_map, out_path):
     print(f"  PNG saved: {out_path}")
 
 
-def _draw_real_room(ax, room, position_map, legend_patches):
-    """Draw a fully visited (solid) room."""
+def _draw_real_room(ax, room, position_map, legend_patches, camera_near: bool = True):
+    """
+    Draw a fully visited (solid) room.
+    camera_near=True  → draw full label (room_type + id + size)
+    camera_near=False → draw only a faint italic initial so the room is
+                        still identifiable but doesn't crowd the map.
+    """
     rid   = room["id"]
     x, y  = position_map.get(rid, (0.0, 0.0))
     w, h  = room.get("width", 4.0), room.get("height", 4.0)
@@ -299,13 +362,27 @@ def _draw_real_room(ax, room, position_map, legend_patches):
     )
     ax.add_patch(rect)
 
-    ax.text(
-        x + w / 2, y + h / 2,
-        f"{rtype}\n{rid}\n({room['size_hint']})",
-        ha="center", va="center",
-        fontsize=max(7, min(11, int(min(w, h) * 2.2))),
-        fontweight="bold", zorder=3,
-    )
+    if camera_near:
+        # Full label
+        ax.text(
+            x + w / 2, y + h / 2,
+            f"{rtype}\n{rid}\n({room['size_hint']})",
+            ha="center", va="center",
+            fontsize=max(7, min(11, int(min(w, h) * 2.2))),
+            fontweight="bold", zorder=3,
+        )
+    else:
+        # Distant room — faint italic room type initial
+        ax.text(
+            x + w / 2, y + h / 2,
+            rtype[0].upper() if rtype else "?",
+            ha="center", va="center",
+            fontsize=max(10, min(16, int(min(w, h) * 3.0))),
+            fontstyle="italic",
+            color="#999999",
+            alpha=0.6,
+            zorder=3,
+        )
 
     if not any(p.get_label() == rtype for p in legend_patches):
         legend_patches.append(
@@ -317,6 +394,7 @@ def _draw_ghost_room(ax, room, position_map):
     """
     Draw a ghost room — dashed outline, hatched interior, italic label.
     Ghost rooms represent spaces the camera saw through a doorway but never entered.
+    The dashed outline is always drawn, even if the camera only glimpsed a door.
     """
     rid   = room["id"]
     x, y  = position_map.get(rid, (0.0, 0.0))
@@ -336,7 +414,7 @@ def _draw_ghost_room(ax, room, position_map):
     )
     ax.add_patch(rect)
 
-    # Italic label
+    # Italic label — always shown for ghost rooms
     label = f"{rtype}\n[?unvisited]"
     ax.text(
         x + w / 2, y + h / 2,
@@ -364,12 +442,12 @@ def _door_segment(x, y, w, h, local_side: str, room_heading: float):
     """Return two endpoints of a door gap on the requested wall side."""
     rel_angle = {"front": 0, "right": 90, "back": 180, "left": 270}.get(local_side, 0)
     abs_heading = (room_heading + rel_angle) % 360
-    
+
     abs_side = "front"
-    if abs_heading == 0: abs_side = "front"     # +Y
-    elif abs_heading == 90: abs_side = "right"  # +X
-    elif abs_heading == 180: abs_side = "back"  # -Y
-    elif abs_heading == 270: abs_side = "left"  # -X
+    if abs_heading == 0:   abs_side = "front"
+    elif abs_heading == 90:  abs_side = "right"
+    elif abs_heading == 180: abs_side = "back"
+    elif abs_heading == 270: abs_side = "left"
 
     cx, cy = x + w / 2, y + h / 2
     half   = _DOOR_WIDTH / 2

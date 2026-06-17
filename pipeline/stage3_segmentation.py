@@ -1,28 +1,26 @@
 """
 Stage 3 — Frame-to-segment grouping and transition detection.
 
-Changes from v3
+Changes from v4
 ---------------
-* _build_segment() updated to handle the new rich door schema from Stage 2 v3:
-    doors_visible is now a list of objects:
-      {"side": "left", "open": true, "leads_to": "corridor", "confidence": 0.85,
-       "likely_traversed": false}
-    Aggregation now:
-      - Counts each side's frequency across frames (threshold: >= 30% of frames)
-      - Records the modal "leads_to" room type for each surviving side
-      - Sets likely_traversed=True on a door side if ANY frame tagged it as such
-        (via Stage 2 Audit Check 7)
-      - Preserves open_count so Stage 4 can rank which door the camera entered
+* _DOOR_THRESHOLD lowered from 0.30 → 0.15 so doors glimpsed in only 1-2 frames
+  of a short segment still survive into Stage 4 (key for ghost room generation).
 
-* _smooth_room_types(): unchanged — respects significant_change boundaries.
-* _build_segment() boundary heuristic: unchanged — rotation + VLM sig-change.
-* detect_transitions(): unchanged in logic, but door_position now prefers
-  the highest-confidence door from the new rich aggregation.
+* _build_segment() now stores `observation_frame_ids` and `min_confidence` on
+  each door entry:
+    - observation_frame_ids: list of frame_ids where this door side was seen
+      (useful for Stage 4's hallucination guard and ghost room logic)
+    - min_confidence: minimum per-frame confidence for this door side
+      (low min_confidence indicates the sighting was very uncertain)
+
+All other logic (smoothing, boundary heuristic, short-segment merging,
+detect_transitions) is unchanged from v3.
 """
 from collections import Counter
 
 _SIZE_HINT_ORDER       = ["very_small", "small", "medium", "large", "very_large"]
-_DOOR_THRESHOLD        = 0.30    # fraction of frames that must show a door side
+_DOOR_THRESHOLD        = 0.15    # fraction of frames that must show a door side
+                                  # (lowered from 0.30 → brief sightings survive)
 _BOUNDARY_FRAC         = 0.20    # fraction of frames with high rotation = boundary
 _VLM_BOUNDARY_FRAC     = 0.25    # fraction of frames with significant_change = boundary
 _ROTATION_BOUNDARY_DEG = 25.0    # degrees; above this counts as a boundary signal
@@ -140,7 +138,6 @@ def detect_transitions(segments: list) -> list:
         if seg_a.get("door_locations"):
             real_doors = [d for d in seg_a["door_locations"] if d["side"] != "none"]
             if real_doors:
-                # Prefer likely_traversed, then highest confidence
                 traversed = [d for d in real_doors if d.get("likely_traversed")]
                 pool = traversed if traversed else real_doors
                 best = max(pool, key=lambda d: d["confidence"])
@@ -293,8 +290,8 @@ def _build_segment(segment_id: int, frames: list,
 
     # ── door_locations: aggregate rich door objects ───────────────────────────
     # For each door side: count appearances, sum confidence, collect leads_to,
-    # and propagate likely_traversed flag.
-    side_data: dict[str, dict] = {}  # side -> {count, conf_sum, leads_to_counts, likely_traversed, open_count}
+    # propagate likely_traversed flag, and track observation frame ids.
+    side_data: dict[str, dict] = {}
 
     for f in frames:
         for d in f.get("doors_visible", []):
@@ -303,15 +300,20 @@ def _build_segment(segment_id: int, frames: list,
                 continue
             if side not in side_data:
                 side_data[side] = {
-                    "count":            0,
-                    "conf_sum":         0.0,
-                    "leads_to_counts":  Counter(),
-                    "likely_traversed": False,
-                    "open_count":       0,
+                    "count":               0,
+                    "conf_sum":            0.0,
+                    "conf_min":            1.0,
+                    "leads_to_counts":     Counter(),
+                    "likely_traversed":    False,
+                    "open_count":          0,
+                    "observation_frame_ids": [],
                 }
             entry = side_data[side]
             entry["count"]       += 1
-            entry["conf_sum"]    += d.get("confidence", 0.5)
+            conf_val = d.get("confidence", 0.5)
+            entry["conf_sum"]    += conf_val
+            entry["conf_min"]     = min(entry["conf_min"], conf_val)
+            entry["observation_frame_ids"].append(f["frame_id"])
             leads_to = d.get("leads_to", "unknown")
             if leads_to and leads_to != "unknown":
                 entry["leads_to_counts"][leads_to] += 1
@@ -323,16 +325,19 @@ def _build_segment(segment_id: int, frames: list,
     door_locations = []
     for side, data in side_data.items():
         frac = data["count"] / n
-        if frac >= _DOOR_THRESHOLD:
-            avg_conf    = round(data["conf_sum"] / data["count"], 2)
+        if frac >= _DOOR_THRESHOLD:   # threshold is now 0.15 (was 0.30)
+            avg_conf     = round(data["conf_sum"] / data["count"], 2)
+            min_conf     = round(data["conf_min"], 2)
             leads_to_ctr = data["leads_to_counts"]
-            leads_to    = leads_to_ctr.most_common(1)[0][0] if leads_to_ctr else "unknown"
+            leads_to     = leads_to_ctr.most_common(1)[0][0] if leads_to_ctr else "unknown"
             door_locations.append({
-                "side":             side,
-                "to_room_type":     leads_to,
-                "confidence":       avg_conf,
-                "likely_traversed": data["likely_traversed"],
-                "open_fraction":    round(data["open_count"] / data["count"], 2),
+                "side":                 side,
+                "to_room_type":         leads_to,
+                "confidence":           avg_conf,
+                "min_confidence":       min_conf,
+                "likely_traversed":     data["likely_traversed"],
+                "open_fraction":        round(data["open_count"] / data["count"], 2),
+                "observation_frame_ids": data["observation_frame_ids"],
             })
 
     # Sort by confidence descending

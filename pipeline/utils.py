@@ -107,8 +107,12 @@ def compute_camera_path(rooms: list, transitions: list, position_map: dict, head
     # ordered room list following transition chain
     ordered_ids: list[str] = []
     visited: set = set()
+    room_lookup = {r["id"]: r for r in rooms}  # must be defined before _chain
 
     def _chain(start_id: str):
+        # Skip ghost rooms — camera never physically entered them
+        if room_lookup.get(start_id, {}).get("ghost", False):
+            return
         ordered_ids.append(start_id)
         visited.add(start_id)
         for t in transitions:
@@ -117,12 +121,11 @@ def compute_camera_path(rooms: list, transitions: list, position_map: dict, head
 
     _chain(rooms[0]["id"])
 
-    # add any rooms not reached by transitions
+    # add any real rooms not reached by transitions
     for r in rooms:
-        if r["id"] not in visited:
+        if r["id"] not in visited and not r.get("ghost", False):
             ordered_ids.append(r["id"])
 
-    room_lookup = {r["id"]: r for r in rooms}
     path = []
     seg_counter = 0
 

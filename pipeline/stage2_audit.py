@@ -216,10 +216,26 @@ def _check_open_door_entry(corrected: list, warnings: list) -> list:
     If frame i shows camera_movement=forward AND frame i-1 had at least one
     open door, tag that open door as likely_traversed=True.
 
-    This gives Stage 4 a signal for which door the camera physically passed
-    through, even when the transition is ambiguous.
+    Direction-awareness rule (v2):
+    - When moving FORWARD, prefer doors on the FRONT wall.
+    - Only fall back to left/right doors if no front door is open.
+    - Never tag a door as likely_traversed if the movement direction is
+      perpendicular to that door's side (e.g. don't tag 'left' door when
+      moving forward and a front door also exists).
+
+    This prevents the bedroom/side doors in a corridor being incorrectly
+    labelled as the traversal point when the camera is moving forward
+    toward a different (front) door.
     """
     result = [dict(p) for p in corrected]
+
+    # Side → movement alignment: which movement directions make sense for a door
+    _ALIGNED_MOVES = {
+        "front": {"forward"},
+        "back":  {"backward"},
+        "left":  {"left", "rotating_left"},
+        "right": {"right", "rotating_right"},
+    }
 
     for i in range(1, len(corrected)):
         curr_ch   = corrected[i].get("changes_from_previous", {})
@@ -235,12 +251,17 @@ def _check_open_door_entry(corrected: list, warnings: list) -> list:
         if not open_doors:
             continue
 
-        # Tag the highest-confidence open door as likely_traversed
-        best = max(open_doors, key=lambda d: d.get("confidence", 0.0))
+        # Prefer front-aligned open doors first (most likely traversal when moving forward)
+        aligned = [d for d in open_doors
+                   if curr_move in _ALIGNED_MOVES.get(d.get("side", "none"), set())]
+        pool = aligned if aligned else open_doors
+
+        # Tag the highest-confidence door from the aligned pool
+        best = max(pool, key=lambda d: d.get("confidence", 0.0))
         warnings.append(_warn(
             prev["frame_id"], "open_door_entry", "low",
             f"Camera moved forward in next frame; open door on '{best['side']}' "
-            f"in this frame tagged likely_traversed=True"
+            f"(aligned={bool(aligned)}) tagged likely_traversed=True"
         ))
 
         # Update the previous frame's door list in result
