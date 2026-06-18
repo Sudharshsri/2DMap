@@ -25,7 +25,7 @@ from typing import Optional
 from pipeline.utils import SIZE_HINT_DIMS, assign_room_positions, compute_camera_path
 
 _OLLAMA_URL  = "http://localhost:11434/api/generate"
-_MODEL       = "llama3.2:3b"
+_MODEL       = "qwen2.5:7b"
 _TIMEOUT_SEC = 300
 
 _PROMPT_TEMPLATE = """\
@@ -171,6 +171,7 @@ def _call_ollama(prompt: str, retries: int = 2) -> Optional[str]:
                     "model":   _MODEL,
                     "prompt":  prompt,
                     "stream":  False,
+                    "format":  "json",
                     "options": {"temperature": 0.05, "num_predict": 2048},
                 },
                 timeout=_TIMEOUT_SEC,

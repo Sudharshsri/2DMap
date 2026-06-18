@@ -51,8 +51,8 @@ from PIL import Image
 
 _OLLAMA_URL  = "http://localhost:11434/api/generate"
 _OLLAMA_TAGS = "http://localhost:11434/api/tags"
-_MODEL       = "qwen2.5vl:3b"
-_TIMEOUT_SEC = 180
+_MODEL       = "qwen2.5vl:7b"
+_TIMEOUT_SEC = 300
 _MAX_IMG_DIM = 512
 
 # ── deterministic inference options ──────────────────────────────────────────
@@ -374,6 +374,7 @@ def _call_ollama(prompt: str, b64: str, retries: int = 2,
                     "prompt":  prompt,
                     "images":  [b64],
                     "stream":  False,
+                    "format":  "json",
                     "options": opts,
                 },
                 timeout=_TIMEOUT_SEC,
