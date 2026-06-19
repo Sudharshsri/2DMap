@@ -129,6 +129,56 @@ def _camera_proximity_set(camera_path: list, rooms: list,
     return near
 
 
+# ── Geometry helpers ─────────────────────────────────────────────────────────
+
+def _get_straight_segments(camera_path: list) -> list:
+    """Combine collinear waypoints into straight segments for distance labeling."""
+    if len(camera_path) < 2:
+        return []
+
+    segments = []
+    current_segment = {"points": [camera_path[0]], "dist": 0.0, "angle": None}
+
+    for i in range(len(camera_path) - 1):
+        p1 = camera_path[i]
+        p2 = camera_path[i+1]
+        dx = p2["x"] - p1["x"]
+        dy = p2["y"] - p1["y"]
+        dist = math.hypot(dx, dy)
+        if dist < 0.01:
+            continue
+        
+        angle = math.atan2(dy, dx)
+        
+        if current_segment["angle"] is None:
+            current_segment["angle"] = angle
+            current_segment["points"].append(p2)
+            current_segment["dist"] += dist
+        else:
+            angle_diff = abs(angle - current_segment["angle"])
+            angle_diff = min(angle_diff, 2 * math.pi - angle_diff)
+            
+            # If direction change is less than 20 degrees, treat it as straight
+            if angle_diff < math.radians(20):
+                current_segment["points"].append(p2)
+                current_segment["dist"] += dist
+            else:
+                # Direction changed — finalize current and start new
+                segments.append(current_segment)
+                current_segment = {"points": [p1, p2], "dist": dist, "angle": angle}
+
+    if current_segment["angle"] is not None:
+        segments.append(current_segment)
+
+    # Compute midpoints
+    for seg in segments:
+        pts = seg["points"]
+        seg["mid_x"] = (pts[0]["x"] + pts[-1]["x"]) / 2
+        seg["mid_y"] = (pts[0]["y"] + pts[-1]["y"]) / 2
+
+    return segments
+
+
 # ── DXF ──────────────────────────────────────────────────────────────────────
 
 def _render_dxf(rooms, camera_path, position_map, heading_map,
@@ -205,6 +255,27 @@ def _render_dxf(rooms, camera_path, position_map, heading_map,
         for pt in camera_path:
             ang = math.radians(pt.get("heading_deg", 0.0))
             _draw_arrow_dxf(msp, pt["x"], pt["y"], ang, "CAMERA_PATH")
+
+        # Label distances for straight line segments
+        straight_segments = _get_straight_segments(camera_path)
+        for seg in straight_segments:
+            if seg["dist"] >= 0.5:
+                # Place label slightly offset perpendicular to the path
+                perp_angle = seg["angle"] + math.pi / 2
+                off_x = seg["mid_x"] + math.cos(perp_angle) * 0.4
+                off_y = seg["mid_y"] + math.sin(perp_angle) * 0.4
+                
+                msp.add_text(
+                    f"{seg['dist']:.1f}m",
+                    dxfattribs={
+                        "layer": "LABELS",
+                        "height": 0.25,
+                        "insert": (off_x, off_y),
+                    }
+                ).set_placement(
+                    (off_x, off_y),
+                    align=ezdxf.enums.TextEntityAlignment.MIDDLE_CENTER,
+                )
 
     doc.saveas(out_path)
     print(f"  DXF saved: {out_path}")
@@ -316,6 +387,18 @@ def _render_png(rooms, camera_path, position_map, heading_map,
                     arrowprops=dict(arrowstyle="->", color="red", lw=2),
                     zorder=10,
                 )
+
+        # Draw distance labels
+        straight_segments = _get_straight_segments(camera_path)
+        for seg in straight_segments:
+            if seg["dist"] >= 0.5:
+                # Place label slightly offset perpendicular to the path
+                perp_angle = seg["angle"] + math.pi / 2
+                off_x = seg["mid_x"] + math.cos(perp_angle) * 0.5
+                off_y = seg["mid_y"] + math.sin(perp_angle) * 0.5
+                ax.text(off_x, off_y, f"{seg['dist']:.1f}m", color="darkred", fontsize=10, 
+                        fontweight="bold", ha="center", va="center", zorder=11,
+                        bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=0.8))
 
         legend_patches += [
             mpatches.Patch(color="green", label="Camera start"),

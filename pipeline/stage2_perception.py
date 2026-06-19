@@ -1,5 +1,5 @@
 """
-Stage 2 — Per-frame semantic perception using Qwen2.5-VL-3B via Ollama.
+Stage 2 — Per-frame semantic perception using qwen2.5vl:3b via Ollama.
 
 v4 changes (consistency + anti-hallucination)
 ---------------------------------------------
@@ -51,7 +51,7 @@ from PIL import Image
 
 _OLLAMA_URL  = "http://localhost:11434/api/generate"
 _OLLAMA_TAGS = "http://localhost:11434/api/tags"
-_MODEL       = "qwen2.5vl:7b"
+_MODEL       = "qwen2.5vl:3b"
 _TIMEOUT_SEC = 300
 _MAX_IMG_DIM = 512
 
@@ -269,7 +269,7 @@ Rules:
 
 def analyze_frames(frame_paths: list) -> list:
     """
-    Run Qwen2.5-VL via Ollama on every frame with temporal comparison,
+    Run qwen2.5vl:3b via Ollama on every frame with temporal comparison,
     consistency re-query, and (where needed) a tiebreaker pass.
     Returns a list of normalised perception dicts.
     """
@@ -426,7 +426,7 @@ def _analyse_one(frame_path: str, frame_id: int,
 
 def _verify_perception(perc: dict, curr_b64: str, frame_id: int) -> dict:
     """
-    Second-pass consistency check: re-query Qwen2.5-VL with the same current
+    Second-pass consistency check: re-query qwen2.5vl:3b with the same current
     frame image and ask it to confirm door detections and room type.
     Only doors confirmed in both passes are kept.
     If room_type still disagrees, run a tiebreaker pass.

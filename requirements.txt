@@ -6,7 +6,8 @@ matplotlib>=3.7.0
 numpy>=1.24.0
 requests>=2.31.0
 
-# ── VLM: Moondream2 via Ollama ────────────────────────────────
-# No Python package needed — Moondream2 runs as an Ollama model.
+# ── VLM & LLM via Ollama ──────────────────────────────────────
+# No Python package needed — models run via Ollama.
 # Install Ollama:  https://ollama.com
-# Pull the model:  ollama pull moondream
+# Pull the models: ollama pull qwen2.5vl:3b
+#                  ollama pull llama3.2:3b

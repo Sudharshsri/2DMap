@@ -25,7 +25,7 @@ from typing import Optional
 from pipeline.utils import SIZE_HINT_DIMS, assign_room_positions, compute_camera_path
 
 _OLLAMA_URL  = "http://localhost:11434/api/generate"
-_MODEL       = "qwen2.5:7b"
+_MODEL       = "llama3.2:3b"
 _TIMEOUT_SEC = 300
 
 _PROMPT_TEMPLATE = """\
@@ -204,6 +204,15 @@ def _parse_and_validate(raw: str, segments: list, transitions: list,
 
     rooms = plan.get("rooms", [])
     if not rooms:
+        return _fallback_floor_plan(segments, transitions, frame_perception)
+
+    # Ensure Llama didn't hallucinate away valid physical rooms
+    expected_types = {s["room_type"] for s in segments if s["room_type"] != "unknown"}
+    actual_types   = {r.get("type", "unknown") for r in rooms if not r.get("ghost", False)}
+    
+    missing_types = expected_types - actual_types
+    if missing_types:
+        print(f"  [WARN] LLM omitted physical rooms: {missing_types}. Using deterministic fallback.")
         return _fallback_floor_plan(segments, transitions, frame_perception)
 
     room_ids: set = set()

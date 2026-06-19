@@ -1,6 +1,9 @@
 output/*
 !output/floor_plan.png
 
+output2/*
+!output2/floor_plan.png
+
 **/__pycache__/
 *.py[cod]
 *.pyo

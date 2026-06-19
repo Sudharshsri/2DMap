@@ -105,7 +105,7 @@ def segment_frames(frame_perception: list, frame_motion: list) -> list:
     return segments
 
 
-def detect_transitions(segments: list) -> list:
+def detect_transitions(segments: list, frame_motion: list = None) -> list:
     """
     Identify room-to-room transitions between consecutive segments.
 
@@ -115,6 +115,7 @@ def detect_transitions(segments: list) -> list:
       - the first frame of seg_b flagged significant_change=True
     """
     transitions: list[dict] = []
+    motion_lookup = {m["frame_id"]: m for m in frame_motion} if frame_motion else {}
 
     for i in range(len(segments) - 1):
         seg_a = segments[i]
@@ -133,28 +134,53 @@ def detect_transitions(segments: list) -> list:
         )
         detected = a_boundary or b_boundary or a_has_door or b_has_door
 
-        # Best door side: prefer likely_traversed doors first, then highest confidence
-        door_position = "front"
-        if seg_a.get("door_locations"):
-            real_doors = [d for d in seg_a["door_locations"] if d["side"] != "none"]
-            if real_doors:
-                traversed = [d for d in real_doors if d.get("likely_traversed")]
-                pool = traversed if traversed else real_doors
-                best = max(pool, key=lambda d: d["confidence"])
-                door_position = best["side"]
-        elif seg_b.get("door_locations"):
-            real_doors = [d for d in seg_b["door_locations"] if d["side"] != "none"]
-            if real_doors:
-                traversed = [d for d in real_doors if d.get("likely_traversed")]
-                pool = traversed if traversed else real_doors
-                best = max(pool, key=lambda d: d["confidence"])
-                door_position = best["side"]
+        entering_rot = 0.0
+        if frame_motion:
+            boundary_fids = []
+            if seg_a.get("frame_ids"):
+                boundary_fids.extend(seg_a["frame_ids"][-2:])
+            if seg_b.get("frame_ids"):
+                boundary_fids.extend(seg_b["frame_ids"][:2])
+            
+            rots = [motion_lookup.get(fid, {}).get("rotation_deg", 0.0) for fid in boundary_fids]
+            if rots:
+                entering_rot = sum(rots) / len(rots)
         else:
             entering_rot = seg_b.get("segment_motion", {}).get("rotation_deg", 0.0)
-            if entering_rot < -10.0:
-                door_position = "left"
-            elif entering_rot > 10.0:
-                door_position = "right"
+
+        motion_side = "front"
+        if entering_rot < -10.0:
+            motion_side = "left"
+        elif entering_rot > 10.0:
+            motion_side = "right"
+
+        # ALWAYS trust definitive physical rotation over VLM door labels
+        if motion_side in ("left", "right"):
+            door_position = motion_side
+        else:
+            def _pick_best_door(doors, target_side):
+                traversed = [d for d in doors if d.get("likely_traversed")]
+                pool = traversed if traversed else doors
+                
+                # 1. Prefer a door that matches the physical motion direction
+                matching = [d for d in pool if d["side"] == target_side]
+                if matching:
+                    return max(matching, key=lambda d: d["confidence"])["side"]
+                
+                # 2. Fallback to highest confidence
+                return max(pool, key=lambda d: d["confidence"])["side"]
+
+            door_position = "front"
+            if seg_a.get("door_locations"):
+                real_doors = [d for d in seg_a["door_locations"] if d["side"] != "none"]
+                if real_doors:
+                    door_position = _pick_best_door(real_doors, motion_side)
+            elif seg_b.get("door_locations"):
+                real_doors = [d for d in seg_b["door_locations"] if d["side"] != "none"]
+                if real_doors:
+                    door_position = _pick_best_door(real_doors, motion_side)
+            else:
+                door_position = motion_side
 
         confidence = round((seg_a["confidence"] + seg_b["confidence"]) / 2, 2)
 

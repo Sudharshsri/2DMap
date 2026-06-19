@@ -53,10 +53,20 @@ def extract_frames_with_motion(video_path: str, output_dir: str,
     saved_idx = 0
     raw_idx   = 0
 
+    accum_dx = 0.0
+    accum_dy = 0.0
+
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        if prev_gray is not None:
+            flow_dx, flow_dy = _compute_raw_flow(prev_gray, gray)
+            accum_dx += flow_dx
+            accum_dy += flow_dy
 
         if raw_idx % interval == 0:
             fname = f"frame_{saved_idx:04d}.jpg"
@@ -64,16 +74,22 @@ def extract_frames_with_motion(video_path: str, output_dir: str,
             cv2.imwrite(fpath, frame)
             frame_paths.append(fpath)
 
-            gray   = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            motion = _compute_motion(prev_gray, gray, saved_idx)
-            frame_motion.append(motion)
+            direction, rotation = _interpret_flow(accum_dx, accum_dy)
+            frame_motion.append({
+                "frame_id": saved_idx,
+                "motion_direction": direction,
+                "rotation_deg": round(rotation, 1)
+            })
 
-            prev_gray  = gray
+            # Reset accumulators for the next interval
+            accum_dx = 0.0
+            accum_dy = 0.0
             saved_idx += 1
 
             if saved_idx % 20 == 0:
                 print(f"  ... {saved_idx} frames saved")
 
+        prev_gray = gray
         raw_idx += 1
 
     cap.release()
@@ -83,24 +99,18 @@ def extract_frames_with_motion(video_path: str, output_dir: str,
 
 # ── private helpers ──────────────────────────────────────────────────────────
 
-def _compute_motion(prev_gray, curr_gray, frame_id: int) -> dict:
-    """Return motion dict for the transition prev→curr."""
-    if prev_gray is None:
-        return {"frame_id": frame_id, "motion_direction": "unknown",
-                "rotation_deg": 0.0}
-
+def _compute_raw_flow(prev_gray, curr_gray) -> tuple[float, float]:
+    """Return raw (dx, dy) optical flow displacement between consecutive frames."""
     diff      = cv2.absdiff(prev_gray, curr_gray)
     mean_diff = float(np.mean(diff))
 
     if mean_diff < _STATIC_THRESHOLD:
-        return {"frame_id": frame_id, "motion_direction": "unknown",
-                "rotation_deg": 0.0}
+        return 0.0, 0.0
 
     # Lucas-Kanade sparse optical flow
     p0 = cv2.goodFeaturesToTrack(prev_gray, mask=None, **_FEATURE_PARAMS)
     if p0 is None or len(p0) < 5:
-        return {"frame_id": frame_id, "motion_direction": "forward",
-                "rotation_deg": 0.0}
+        return 0.0, 0.0
 
     p1, st, _ = cv2.calcOpticalFlowPyrLK(prev_gray, curr_gray, p0, None,
                                           **_LK_PARAMS)
@@ -108,16 +118,13 @@ def _compute_motion(prev_gray, curr_gray, frame_id: int) -> dict:
     good_old = p0[st == 1]
 
     if len(good_new) < 3:
-        return {"frame_id": frame_id, "motion_direction": "forward",
-                "rotation_deg": 0.0}
+        return 0.0, 0.0
 
     flow = good_new - good_old
     dx   = float(np.mean(flow[:, 0]))
     dy   = float(np.mean(flow[:, 1]))
 
-    direction, rotation = _interpret_flow(dx, dy)
-    return {"frame_id": frame_id, "motion_direction": direction,
-            "rotation_deg": round(rotation, 1)}
+    return dx, dy
 
 
 def _interpret_flow(dx: float, dy: float) -> tuple:
